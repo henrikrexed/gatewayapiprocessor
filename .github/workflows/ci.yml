@@ -70,7 +70,7 @@ jobs:
 
       - name: Upload coverage artifact
         if: matrix.go == '1.25'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-go${{ matrix.go }}
           path: ${{ env.MODULE_DIR }}/coverage.out
