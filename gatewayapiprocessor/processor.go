@@ -1,0 +1,459 @@
+package gatewayapiprocessor
+
+import (
+	"context"
+	"fmt"
+
+	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/collector/processor"
+	"go.uber.org/zap"
+
+	"github.com/henrikrexed/gatewayapiprocessor/gatewayapiprocessor/parser"
+)
+
+// gatewayAPIProcessor is the runtime for all three signal types.
+// A single instance is shared across traces/logs/metrics so the informer
+// caches and parser chain are built once per collector.
+type gatewayAPIProcessor struct {
+	cfg    *Config
+	logger *zap.Logger
+
+	parsers            []parser.Parser
+	passthroughAttrKey string // empty if no passthrough parser configured
+
+	tracesNext  consumer.Traces
+	logsNext    consumer.Logs
+	metricsNext consumer.Metrics
+
+	lookup RouteLookup
+
+	// startHook is called during Start to warm informers. Tests override it with
+	// a no-op; production binds it to newInformers(...).
+	startHook func(ctx context.Context) (RouteLookup, func(context.Context) error, error)
+	stopFn    func(context.Context) error
+}
+
+func newProcessor(set processor.Settings, cfg *Config) (*gatewayAPIProcessor, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("gatewayapiprocessor: nil config")
+	}
+	parsers, passthroughKey, err := buildParserChain(cfg.Parsers)
+	if err != nil {
+		return nil, err
+	}
+	return &gatewayAPIProcessor{
+		cfg:                cfg,
+		logger:             set.Logger,
+		parsers:            parsers,
+		passthroughAttrKey: passthroughKey,
+		lookup:             newStaticLookup(), // replaced in Start() when informers wire up
+	}, nil
+}
+
+func buildParserChain(pcs []ParserConfig) ([]parser.Parser, string, error) {
+	out := make([]parser.Parser, 0, len(pcs))
+	passthroughKey := ""
+	for _, pc := range pcs {
+		switch pc.Name {
+		case "envoy":
+			p, err := parser.NewEnvoyParser(pc.Name, pc.SourceAttribute, pc.FormatRegex, pc.Controllers)
+			if err != nil {
+				return nil, "", fmt.Errorf("envoy parser: %w", err)
+			}
+			out = append(out, p)
+		case "linkerd":
+			out = append(out, parser.NewLinkerdParser(pc.Name, pc.Controllers, parser.LinkerdLabelKeys{
+				RouteName:      pc.LinkerdLabels.RouteName,
+				RouteKind:      pc.LinkerdLabels.RouteKind,
+				RouteNamespace: pc.LinkerdLabels.RouteNamespace,
+				ParentName:     pc.LinkerdLabels.ParentName,
+			}))
+		case "passthrough":
+			pp := parser.NewPassthroughParser(pc.Name, pc.SourceAttribute, pc.PassthroughAttribute)
+			passthroughKey = pp.PassthroughAttribute()
+			out = append(out, pp)
+		default:
+			return nil, "", fmt.Errorf("unknown parser %q", pc.Name)
+		}
+	}
+	return out, passthroughKey, nil
+}
+
+// --- component.Component ---
+
+func (p *gatewayAPIProcessor) Start(ctx context.Context, _ component.Host) error {
+	if p.startHook == nil {
+		// Non-Kubernetes mode / tests with static lookup: nothing to warm up.
+		return nil
+	}
+	lookup, stop, err := p.startHook(ctx)
+	if err != nil {
+		return fmt.Errorf("gatewayapiprocessor start: %w", err)
+	}
+	p.lookup = lookup
+	p.stopFn = stop
+	return nil
+}
+
+func (p *gatewayAPIProcessor) Shutdown(ctx context.Context) error {
+	if p.stopFn != nil {
+		return p.stopFn(ctx)
+	}
+	return nil
+}
+
+func (p *gatewayAPIProcessor) Capabilities() consumer.Capabilities {
+	return consumer.Capabilities{MutatesData: true}
+}
+
+// --- traces ---
+
+func (p *gatewayAPIProcessor) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
+	if p.cfg.Enrich.Traces {
+		rss := td.ResourceSpans()
+		for i := 0; i < rss.Len(); i++ {
+			rs := rss.At(i)
+			resourceAttrs := rs.Resource().Attributes()
+			sss := rs.ScopeSpans()
+			for j := 0; j < sss.Len(); j++ {
+				ss := sss.At(j)
+				spans := ss.Spans()
+				for k := 0; k < spans.Len(); k++ {
+					span := spans.At(k)
+					p.enrich(resourceAttrs, span.Attributes(), signalTraces)
+				}
+			}
+		}
+	}
+	if p.tracesNext != nil {
+		return p.tracesNext.ConsumeTraces(ctx, td)
+	}
+	return nil
+}
+
+// --- logs ---
+
+func (p *gatewayAPIProcessor) ConsumeLogs(ctx context.Context, ld plog.Logs) error {
+	if p.cfg.Enrich.Logs {
+		rls := ld.ResourceLogs()
+		for i := 0; i < rls.Len(); i++ {
+			rl := rls.At(i)
+			resourceAttrs := rl.Resource().Attributes()
+			sls := rl.ScopeLogs()
+			for j := 0; j < sls.Len(); j++ {
+				sl := sls.At(j)
+				recs := sl.LogRecords()
+				for k := 0; k < recs.Len(); k++ {
+					rec := recs.At(k)
+					p.enrich(resourceAttrs, rec.Attributes(), signalLogs)
+				}
+			}
+		}
+	}
+	if p.logsNext != nil {
+		return p.logsNext.ConsumeLogs(ctx, ld)
+	}
+	return nil
+}
+
+// --- metrics ---
+
+func (p *gatewayAPIProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
+	if p.cfg.Enrich.Metrics {
+		rms := md.ResourceMetrics()
+		for i := 0; i < rms.Len(); i++ {
+			rm := rms.At(i)
+			resourceAttrs := rm.Resource().Attributes()
+			sms := rm.ScopeMetrics()
+			for j := 0; j < sms.Len(); j++ {
+				sm := sms.At(j)
+				ms := sm.Metrics()
+				for k := 0; k < ms.Len(); k++ {
+					m := ms.At(k)
+					p.enrichMetric(resourceAttrs, m)
+				}
+			}
+		}
+	}
+	if p.metricsNext != nil {
+		return p.metricsNext.ConsumeMetrics(ctx, md)
+	}
+	return nil
+}
+
+// enrichMetric applies enrichment to every data point of the metric, because
+// metric-level attributes live on data points (not on the Metric struct).
+func (p *gatewayAPIProcessor) enrichMetric(resourceAttrs pcommon.Map, m pmetric.Metric) {
+	//exhaustive:enforce
+	switch m.Type() {
+	case pmetric.MetricTypeGauge:
+		dps := m.Gauge().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			p.enrich(resourceAttrs, dps.At(i).Attributes(), signalMetrics)
+		}
+	case pmetric.MetricTypeSum:
+		dps := m.Sum().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			p.enrich(resourceAttrs, dps.At(i).Attributes(), signalMetrics)
+		}
+	case pmetric.MetricTypeHistogram:
+		dps := m.Histogram().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			p.enrich(resourceAttrs, dps.At(i).Attributes(), signalMetrics)
+		}
+	case pmetric.MetricTypeExponentialHistogram:
+		dps := m.ExponentialHistogram().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			p.enrich(resourceAttrs, dps.At(i).Attributes(), signalMetrics)
+		}
+	case pmetric.MetricTypeSummary:
+		dps := m.Summary().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			p.enrich(resourceAttrs, dps.At(i).Attributes(), signalMetrics)
+		}
+	}
+}
+
+type signalKind int
+
+const (
+	signalTraces signalKind = iota
+	signalLogs
+	signalMetrics
+)
+
+// enrich is the single enrichment path shared by all three signals.
+//
+// Algorithm (processor-spec §2.4 ConsumeTraces/Logs/Metrics):
+//  1. Build a combined attribute view (record > resource).
+//  2. Run parser chain; first matched wins.
+//  3. If passthrough matched: stamp raw + parser attrs, no CR lookup, done.
+//  4. Otherwise: stamp route attrs directly from parser, then enrich with CR
+//     metadata via lookup (gateway/gatewayclass/status).
+//  5. If backendref_fallback is enabled and no parser matched, try the
+//     server.address → HTTPRoute index.
+//  6. For signalMetrics, strip exclude_from_metric_attributes keys.
+func (p *gatewayAPIProcessor) enrich(resourceAttrs, recordAttrs pcommon.Map, signal signalKind) {
+	view := combinedView{record: recordAttrs, resource: resourceAttrs}
+
+	var matched parser.Result
+	var any bool
+	for _, pr := range p.parsers {
+		res := pr.Parse(view)
+		if res.Matched {
+			matched = res
+			any = true
+			break
+		}
+	}
+
+	if !any {
+		if p.cfg.BackendRefFallba.Enabled {
+			p.applyBackendRefFallback(view, recordAttrs, signal)
+		}
+		return
+	}
+
+	// Stamp raw + parser id for every matched result (envoy/linkerd/passthrough).
+	if matched.RawRouteName != "" && p.passthroughAttrKey != "" {
+		// passthroughAttrKey is set when a passthrough parser exists; that attr
+		// is also the cardinality-sensitive metric strip target, so we only
+		// stamp raw routes when it's configured.
+		putString(recordAttrs, p.passthroughAttrKey, matched.RawRouteName)
+	}
+	if matched.ParserName != "" {
+		putString(recordAttrs, AttrParser, matched.ParserName)
+	}
+
+	// Passthrough doesn't carry (namespace, name) — stop here.
+	if matched.Namespace == "" || matched.Name == "" {
+		p.maybeStripMetrics(recordAttrs, signal)
+		return
+	}
+
+	p.stampRouteIdentity(recordAttrs, matched)
+	p.stampCRMetadata(recordAttrs, matched)
+	p.maybeStripMetrics(recordAttrs, signal)
+}
+
+// stampRouteIdentity writes attributes that come straight from the parser
+// result (no CR lookup required).
+func (p *gatewayAPIProcessor) stampRouteIdentity(attrs pcommon.Map, r parser.Result) {
+	switch r.Kind {
+	case "GRPCRoute":
+		putString(attrs, AttrGRPCRouteName, r.Name)
+		putString(attrs, AttrGRPCRouteNamespace, r.Namespace)
+	default:
+		putString(attrs, AttrHTTPRouteName, r.Name)
+		putString(attrs, AttrHTTPRouteNamespace, r.Namespace)
+		if r.RuleIndex >= 0 {
+			attrs.PutInt(AttrHTTPRouteRuleIndex, int64(r.RuleIndex))
+		}
+		if r.MatchIndex >= 0 {
+			attrs.PutInt(AttrHTTPRouteMatchIndex, int64(r.MatchIndex))
+		}
+	}
+}
+
+// stampCRMetadata enriches with gateway/gatewayclass fields read from the
+// informer cache. Absent informers (static lookup, cache miss) → no-op; the
+// record still carries the parser-derived route identity.
+func (p *gatewayAPIProcessor) stampCRMetadata(attrs pcommon.Map, r parser.Result) {
+	kind := RouteKindHTTPRoute
+	if r.Kind == "GRPCRoute" {
+		kind = RouteKindGRPCRoute
+	}
+	ra, ok := p.lookup.LookupRoute(kind, r.Namespace, r.Name)
+	if !ok {
+		return
+	}
+	p.stampRouteAttrs(attrs, ra)
+}
+
+// stampRouteAttrs writes all enrichment fields from a RouteAttributes.
+// Shared by direct-parse path and backendref_fallback path.
+func (p *gatewayAPIProcessor) stampRouteAttrs(attrs pcommon.Map, ra RouteAttributes) {
+	if ra.UID != "" {
+		if ra.Kind == RouteKindGRPCRoute {
+			// UID is stamped under HTTPRoute key in the schema; gRPC routes keep
+			// only name/namespace per processor-spec §1.2 table row 9-10.
+		} else {
+			putString(attrs, AttrHTTPRouteUID, ra.UID)
+		}
+	}
+	if ra.ParentRef != "" && ra.Kind != RouteKindGRPCRoute {
+		putString(attrs, AttrHTTPRouteParentRef, ra.ParentRef)
+	}
+	if p.cfg.EmitStatusConds && ra.Kind != RouteKindGRPCRoute {
+		if ra.Accepted != nil {
+			attrs.PutBool(AttrHTTPRouteAccepted, *ra.Accepted)
+		}
+		if ra.ResolvedRefs != nil {
+			attrs.PutBool(AttrHTTPRouteResolvedRefs, *ra.ResolvedRefs)
+		}
+	}
+	if ra.GatewayName != "" {
+		putString(attrs, AttrGatewayName, ra.GatewayName)
+	}
+	if ra.GatewayNamespace != "" {
+		putString(attrs, AttrGatewayNamespace, ra.GatewayNamespace)
+	}
+	if ra.GatewayUID != "" {
+		putString(attrs, AttrGatewayUID, ra.GatewayUID)
+	}
+	if ra.GatewayListenerName != "" {
+		putString(attrs, AttrGatewayListenerName, ra.GatewayListenerName)
+	}
+	if ra.GatewayClassName != "" {
+		putString(attrs, AttrGatewayClassName, ra.GatewayClassName)
+	}
+	if ra.GatewayClassControllerName != "" {
+		putString(attrs, AttrGatewayClassController, ra.GatewayClassControllerName)
+	}
+}
+
+// applyBackendRefFallback tries to resolve a route via the server.address →
+// HTTPRoute index when no parser matched.
+func (p *gatewayAPIProcessor) applyBackendRefFallback(view combinedView, recordAttrs pcommon.Map, signal signalKind) {
+	key := p.cfg.BackendRefFallba.SourceAttribute
+	if key == "" {
+		return
+	}
+	addr, ok := view.Get(key)
+	if !ok || addr == "" {
+		return
+	}
+	ns, svc := splitAddress(addr)
+	if ns == "" || svc == "" {
+		return
+	}
+	ra, ok := p.lookup.LookupByBackendService(ns, svc)
+	if !ok {
+		return
+	}
+	// Synthesize a parser result so we can share the stamping path.
+	pr := parser.Result{
+		Matched:    true,
+		Namespace:  ra.Namespace,
+		Name:       ra.Name,
+		Kind:       "HTTPRoute",
+		RuleIndex:  -1,
+		MatchIndex: -1,
+		ParserName: "backendref_fallback",
+	}
+	p.stampRouteIdentity(recordAttrs, pr)
+	p.stampRouteAttrs(recordAttrs, ra)
+	putString(recordAttrs, AttrParser, pr.ParserName)
+	p.maybeStripMetrics(recordAttrs, signal)
+}
+
+// maybeStripMetrics removes cardinality-sensitive attributes on metrics only.
+// processor-spec §1.4: *.uid must never land on metric pipelines.
+func (p *gatewayAPIProcessor) maybeStripMetrics(attrs pcommon.Map, signal signalKind) {
+	if signal != signalMetrics {
+		return
+	}
+	for _, k := range p.cfg.Enrich.ExcludeFromMetricAttributes {
+		attrs.Remove(k)
+	}
+}
+
+// combinedView reads first from record attributes, then falls back to
+// resource attributes. Most data planes put route_name on record; resource
+// fallback covers collectors that lift labels to the resource.
+type combinedView struct {
+	record   pcommon.Map
+	resource pcommon.Map
+}
+
+func (v combinedView) Get(key string) (string, bool) {
+	if val, ok := v.record.Get(key); ok {
+		return val.AsString(), true
+	}
+	if val, ok := v.resource.Get(key); ok {
+		return val.AsString(), true
+	}
+	return "", false
+}
+
+func putString(m pcommon.Map, key, val string) {
+	m.PutStr(key, val)
+}
+
+// splitAddress extracts (namespace, service) from a Kubernetes Service DNS
+// name like "api-service.demo.svc.cluster.local" or "api-service.demo".
+// Returns ("","") for addresses we can't decode (raw IPs, external hosts).
+func splitAddress(addr string) (string, string) {
+	svc, ns := "", ""
+	// parse dot-separated segments; need at least <svc>.<ns>
+	dot := -1
+	for i := 0; i < len(addr); i++ {
+		if addr[i] == '.' {
+			dot = i
+			break
+		}
+	}
+	if dot <= 0 || dot == len(addr)-1 {
+		return "", ""
+	}
+	svc = addr[:dot]
+	rest := addr[dot+1:]
+	// namespace is the next segment before the next dot (or to end-of-string)
+	nsEnd := len(rest)
+	for i := 0; i < len(rest); i++ {
+		if rest[i] == '.' {
+			nsEnd = i
+			break
+		}
+	}
+	ns = rest[:nsEnd]
+	if ns == "" {
+		return "", ""
+	}
+	return ns, svc
+}
