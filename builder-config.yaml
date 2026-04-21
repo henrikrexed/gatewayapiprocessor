@@ -1,0 +1,43 @@
+# OpenTelemetry Collector Builder (OCB) manifest for the custom
+# gatewayapiprocessor-enabled collector. Built by `make build-collector` and
+# pushed via `.github/workflows/build.yaml` (multi-arch) to GHCR.
+#
+# Version pins are authoritative in VERSIONS.md — if you bump one, bump it there
+# first and run the kind revalidation (ISI-671).
+
+dist:
+  name: otelcol-gatewayapi
+  description: OTel Collector with gatewayapiprocessor (ObsSummit NA 2026 demo)
+  output_path: ./_build
+  version: 0.150.0-isi.1
+
+receivers:
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.150.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filelogreceiver v0.150.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver v0.150.0
+
+processors:
+  # Pipeline invariants per Observability Agent rules:
+  #   memory_limiter MUST be first, batch MUST be last.
+  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.150.0
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.150.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/k8sattributesprocessor v0.150.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor v0.150.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.150.0
+  # The new one — ISI-670 gating deliverable.
+  - gomod: github.com/henrikrexed/gatewayapiprocessor/gatewayapiprocessor v0.1.0
+
+exporters:
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.150.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusexporter v0.150.0
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.150.0
+
+extensions:
+  - gomod: go.opentelemetry.io/collector/extension/memorylimiterextension v0.150.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckextension v0.150.0
+
+# Replace block: point OCB at the local processor module during development so
+# we don't round-trip through a GitHub tag for every iteration. CI strips this
+# before the image build (see .github/workflows/build.yaml).
+replaces:
+  - github.com/henrikrexed/gatewayapiprocessor/gatewayapiprocessor => ./gatewayapiprocessor

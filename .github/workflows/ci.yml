@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+      - 'feat/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MODULE_DIR: gatewayapiprocessor
+  COVERAGE_WARN: 80
+  COVERAGE_FAIL: 70
+
+jobs:
+  test:
+    name: test (go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # OTEL Collector v0.150 requires Go 1.25. Run the matrix on 1.25 only —
+        # lower minors will auto-bump via GOTOOLCHAIN=auto anyway, but pinning
+        # the reported version keeps CI logs readable.
+        go: ['1.25']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go ${{ matrix.go }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+          cache-dependency-path: ${{ env.MODULE_DIR }}/go.sum
+
+      - name: go vet
+        working-directory: ${{ env.MODULE_DIR }}
+        run: go vet ./...
+
+      - name: go test (race + coverage)
+        working-directory: ${{ env.MODULE_DIR }}
+        run: |
+          go test ./... \
+            -race \
+            -covermode=atomic \
+            -coverprofile=coverage.out \
+            -timeout=5m
+
+      - name: Coverage gate (warn < ${{ env.COVERAGE_WARN }}%, fail < ${{ env.COVERAGE_FAIL }}%)
+        working-directory: ${{ env.MODULE_DIR }}
+        run: |
+          pct=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')
+          echo "Total coverage: ${pct}%"
+          awk -v p="$pct" -v w="$COVERAGE_WARN" -v f="$COVERAGE_FAIL" 'BEGIN {
+            if (p+0 < f+0) { print "::error::coverage " p "% below fail threshold " f "%"; exit 1 }
+            else if (p+0 < w+0) { print "::warning::coverage " p "% below warn threshold " w "%" }
+            else { print "coverage " p "% OK" }
+          }'
+          echo "COVERAGE_PCT=$pct" >> "$GITHUB_ENV"
+
+      - name: Upload coverage artifact
+        if: matrix.go == '1.25'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-go${{ matrix.go }}
+          path: ${{ env.MODULE_DIR }}/coverage.out
+          retention-days: 14
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: ${{ env.MODULE_DIR }}/go.sum
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          # Last v1-line release; v2.x changed the config schema.
+          # Migration to v2 is tracked as a follow-up so this PR stays scoped to the OTEL bump.
+          version: v1.64.8
+          working-directory: ${{ env.MODULE_DIR }}
+          args: --timeout=5m
+
+  build-ocb:
+    name: OCB build (smoke)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: ${{ env.MODULE_DIR }}/go.sum
+
+      - name: Install OCB
+        run: |
+          OCB_VERSION=$(grep -E '^\s*version:' builder-config.yaml | head -1 | awk '{print $2}' | cut -d- -f1)
+          echo "Installing OCB v${OCB_VERSION}"
+          go install go.opentelemetry.io/collector/cmd/builder@v${OCB_VERSION}
+
+      - name: Build custom collector
+        run: |
+          builder --config=builder-config.yaml
+          ls -lh _build/
+
+      - name: Smoke-test binary (--help)
+        run: |
+          ./_build/otelcol-gatewayapi --help | head -20

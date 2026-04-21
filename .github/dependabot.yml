@@ -1,0 +1,40 @@
+version: 2
+updates:
+  # Actions pins
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - github-actions
+
+  # Go module
+  - package-ecosystem: gomod
+    directory: /gatewayapiprocessor
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - go
+    groups:
+      otel:
+        patterns:
+          - "go.opentelemetry.io/*"
+          - "github.com/open-telemetry/*"
+      k8s:
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+
+  # Docker base images
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - docker

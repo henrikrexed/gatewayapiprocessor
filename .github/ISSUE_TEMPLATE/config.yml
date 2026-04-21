@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Paperclip tracker (IsItObservable)
+    url: https://paperclip.isitobservable.com/ISI/issues
+    about: Internal work items are tracked in Paperclip. Use GitHub Issues for external defects / feature requests only.
