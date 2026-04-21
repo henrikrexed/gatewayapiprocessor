@@ -153,8 +153,10 @@ jobs:
   # — zero compilation inside Docker, so we avoid the QEMU-emulated Go build
   # hang that killed the first v0.0.1 run (ISI-703).
   #
-  # Platform coverage matches distroless-static-debian12: linux/amd64,
-  # linux/arm64, linux/arm/v7, linux/386, linux/ppc64le, linux/s390x.
+  # Platform coverage matches what distroless-static-debian12 publishes:
+  # linux/amd64, linux/arm64, linux/arm/v7, linux/ppc64le, linux/s390x.
+  # (linux/386 is available for the standalone binary but distroless does
+  # not publish a 386 variant, so it's not included in the image matrix.)
   # ---------------------------------------------------------------------------
   image:
     name: Multi-arch image
@@ -194,7 +196,7 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
         with:
-          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/386,linux/ppc64le,linux/s390x
+          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/ppc64le,linux/s390x
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -224,13 +226,13 @@ jobs:
             org.opencontainers.image.vendor=IsItObservable
             org.opencontainers.image.version=${{ github.ref_name }}
 
-      - name: Build and push (linux amd64, arm64, arm/v7, 386, ppc64le, s390x)
+      - name: Build and push (linux amd64, arm64, arm/v7, ppc64le, s390x)
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/386,linux/ppc64le,linux/s390x
+          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/ppc64le,linux/s390x
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -361,7 +363,7 @@ jobs:
             echo "## ${GITHUB_REF_NAME}"
             echo ""
             echo "**Image:** \`${IMAGE_REGISTRY}/${IMAGE_NAME}:${GITHUB_REF_NAME}\`"
-            echo "**Platforms:** \`linux/amd64\`, \`linux/arm64\`, \`linux/arm/v7\`, \`linux/386\`, \`linux/ppc64le\`, \`linux/s390x\`"
+            echo "**Image platforms:** \`linux/amd64\`, \`linux/arm64\`, \`linux/arm/v7\`, \`linux/ppc64le\`, \`linux/s390x\`"
             echo "**Signed with:** cosign (keyless, OIDC). Verify with:"
             echo ""
             echo '```'
