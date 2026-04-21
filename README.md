@@ -73,6 +73,25 @@ Makefile                     make demo / make clean / make test / make lint
 VERSIONS.md                  pinned manifest (authoritative)
 ```
 
+## Branch protection (manual setup)
+
+Branch protection on `main` is configured manually by the repo owner. The
+expected rules:
+
+- Require PRs before merging; at least 1 approving review.
+- Require `CODEOWNERS` review for changes touching `.github/`, `Dockerfile`,
+  `builder-config.yaml`, `VERSIONS.md`, or `docs/` / `mkdocs.yml`.
+- Require these status checks to pass before merging:
+  - `CI / test (go 1.23)`
+  - `CI / test (go 1.24)`
+  - `CI / golangci-lint`
+  - `CI / OCB build (smoke)`
+- Require branches to be up to date before merging.
+- Dismiss stale reviews on new commits.
+
+Rules are enforced by Henrik in repo Settings → Branches. CI workflows in
+`.github/workflows/` provide the status checks referenced above.
+
 ## License
 
 Apache-2.0. Matches `opentelemetry-collector-contrib` so we can upstream later.
