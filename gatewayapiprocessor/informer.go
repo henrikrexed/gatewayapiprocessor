@@ -3,6 +3,7 @@ package gatewayapiprocessor
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -302,32 +303,58 @@ func formatParentRef(pr gwv1.ParentReference, ownerNS string) string {
 }
 
 // --- small typed stores for Gateway / GatewayClass ---
+//
+// Both stores are written by informer event handlers (running on informer
+// goroutines) and read by the enrichment path + route projection (on signal
+// pipeline goroutines). A RWMutex keeps go test -race clean.
 
 type gatewayStore struct {
-	m map[string]*gwv1.Gateway
+	mu sync.RWMutex
+	m  map[string]*gwv1.Gateway
 }
 
 func newGatewayStore() *gatewayStore { return &gatewayStore{m: map[string]*gwv1.Gateway{}} }
 
-func (s *gatewayStore) upsert(gw *gwv1.Gateway) { s.m[gw.Namespace+"/"+gw.Name] = gw }
+func (s *gatewayStore) upsert(gw *gwv1.Gateway) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m[gw.Namespace+"/"+gw.Name] = gw
+}
 
 func (s *gatewayStore) get(ns, name string) (*gwv1.Gateway, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	g, ok := s.m[ns+"/"+name]
 	return g, ok
 }
-func (s *gatewayStore) delete(ns, name string) { delete(s.m, ns+"/"+name) }
+func (s *gatewayStore) delete(ns, name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, ns+"/"+name)
+}
 
 type gatewayClassStore struct {
-	m map[string]*gwv1.GatewayClass
+	mu sync.RWMutex
+	m  map[string]*gwv1.GatewayClass
 }
 
 func newGatewayClassStore() *gatewayClassStore {
 	return &gatewayClassStore{m: map[string]*gwv1.GatewayClass{}}
 }
 
-func (s *gatewayClassStore) upsert(gc *gwv1.GatewayClass) { s.m[gc.Name] = gc }
+func (s *gatewayClassStore) upsert(gc *gwv1.GatewayClass) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m[gc.Name] = gc
+}
 func (s *gatewayClassStore) get(name string) (*gwv1.GatewayClass, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	g, ok := s.m[name]
 	return g, ok
 }
-func (s *gatewayClassStore) delete(name string) { delete(s.m, name) }
+func (s *gatewayClassStore) delete(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, name)
+}
