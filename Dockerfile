@@ -16,18 +16,23 @@ FROM --platform=${BUILDPLATFORM} golang:${GO_VERSION}-bookworm AS build
 ARG OCB_VERSION
 ARG TARGETOS
 ARG TARGETARCH
+ARG TARGETVARIANT
 
+WORKDIR /src
+
+# Step 1 — install OCB for the BUILD platform (not the target). If GOOS/GOARCH
+# were set here, `go install` would drop the binary into $GOPATH/bin/<goos>_<goarch>/
+# and PATH would not find it on cross builds (ISI-703).
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go install go.opentelemetry.io/collector/cmd/builder@v${OCB_VERSION}
+
+# Step 2 — now switch to target platform env so OCB cross-compiles the collector.
+# TARGETVARIANT is "v7" for linux/arm/v7; map it into GOARM.
 ENV CGO_ENABLED=0 \
     GOOS=${TARGETOS} \
     GOARCH=${TARGETARCH} \
     GOFLAGS=-trimpath
-
-WORKDIR /src
-
-# Install OCB once (pulls versioned module).
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    go install go.opentelemetry.io/collector/cmd/builder@v${OCB_VERSION}
 
 # Copy only what OCB needs. The replace block in builder-config.yaml points
 # at the local module, so the subdir must be present.
@@ -36,10 +41,13 @@ COPY gatewayapiprocessor ./gatewayapiprocessor
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    builder --config=builder-config.yaml \
+    if [ "${TARGETARCH}" = "arm" ] && [ -n "${TARGETVARIANT}" ]; then \
+      export GOARM="${TARGETVARIANT#v}"; \
+    fi \
+ && builder --config=builder-config.yaml \
  && ls -lh _build/ \
- && cp _build/otelcol-gatewayapi /out/otelcol-gatewayapi 2>/dev/null \
- || (mkdir -p /out && cp _build/otelcol-gatewayapi /out/otelcol-gatewayapi)
+ && mkdir -p /out \
+ && cp _build/otelcol-gatewayapi /out/otelcol-gatewayapi
 
 # -----------------------------------------------------------------------------
 # Stage 2 — distroless runtime
