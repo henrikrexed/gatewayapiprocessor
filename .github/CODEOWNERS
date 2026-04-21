@@ -1,0 +1,17 @@
+# CODEOWNERS for gatewayapiprocessor.
+# All paths default to the repo owner. Overrides below for specific surfaces.
+
+*                           @henrikrexed
+
+# CI/CD surface
+/.github/                   @henrikrexed
+/Dockerfile                 @henrikrexed
+/.dockerignore              @henrikrexed
+
+# Pinning discipline — any version bump must surface in VERSIONS.md first.
+/VERSIONS.md                @henrikrexed
+/builder-config.yaml        @henrikrexed
+
+# Docs (Content Writer seeds docs/ layout and mkdocs.yml).
+/docs/                      @henrikrexed
+/mkdocs.yml                 @henrikrexed

@@ -1,0 +1,13 @@
+.git
+.github
+.gitignore
+docs
+deploy
+backends
+Makefile
+README.md
+VERSIONS.md
+LICENSE
+_build
+**/*_test.go
+**/testdata
