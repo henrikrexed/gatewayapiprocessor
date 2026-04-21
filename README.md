@@ -247,6 +247,25 @@ mkdocs serve       # http://127.0.0.1:8000
 
 **Development.** The processor is shipped at `component.StabilityLevelDevelopment` in [`factory.go`](./gatewayapiprocessor/factory.go). The attribute contract in [`attrs.go`](./gatewayapiprocessor/attrs.go) is the surface treated as stable — any rename is a breaking change and is called out in the release notes.
 
+## Branch protection (manual setup)
+
+Branch protection on `main` is configured manually by the repo owner. The
+expected rules:
+
+- Require PRs before merging; at least 1 approving review.
+- Require `CODEOWNERS` review for changes touching `.github/`, `Dockerfile`,
+  `builder-config.yaml`, `VERSIONS.md`, or `docs/` / `mkdocs.yml`.
+- Require these status checks to pass before merging:
+  - `CI / test (go 1.23)`
+  - `CI / test (go 1.24)`
+  - `CI / golangci-lint`
+  - `CI / OCB build (smoke)`
+- Require branches to be up to date before merging.
+- Dismiss stale reviews on new commits.
+
+Rules are enforced by Henrik in repo Settings → Branches. CI workflows in
+`.github/workflows/` provide the status checks referenced above.
+
 ## License
 
 Apache-2.0 — matches `opentelemetry-collector-contrib` so the processor can be upstreamed later (see [roadmap](https://henrikrexed.github.io/gatewayapiprocessor/roadmap/)).
