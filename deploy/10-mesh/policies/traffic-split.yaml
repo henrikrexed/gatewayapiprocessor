@@ -1,0 +1,36 @@
+# Weighted traffic split for the cart service as a 90/10 canary.
+#
+# This sits in ingress-bound mode (parentRef = ingress Gateway). The processor
+# stamps `k8s.httproute.name=cartservice-canary` + the backend weight on every
+# span, so the Notebook can show the canary slice separately without per-
+# deploy dashboards. Complements the mesh-bound canary in
+# `deploy/10-mesh/gamma-routes.yaml` — same CRD, different parentRef.
+#
+# Reference: gateway-api.sigs.k8s.io/api-types/httproute/
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: cartservice-canary
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/part-of: otel-demo
+    demo.isitobservable.com/route-mode: ingress
+spec:
+  parentRefs:
+    - name: ingress
+      namespace: otel-demo
+  hostnames:
+    - api.demo.local
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/cart
+      backendRefs:
+        - name: cartservice
+          port: 8080
+          weight: 90
+        - name: cartservice-canary
+          port: 8080
+          weight: 10

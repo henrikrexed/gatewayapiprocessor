@@ -1,0 +1,15 @@
+# Gateway API CRDs — pinned v1.3.0 (standard channel).
+# Applied via kustomize so the pin travels with the repo rather than relying
+# on a bare `kubectl apply -f https://…` in a slide.
+#
+# Usage (from Makefile): kubectl apply -k deploy/00-operators/gateway-api-crds.yaml.d
+# or apply the rendered manifest directly:
+#   kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.3.0/standard-install.yaml
+#
+# This file is a thin wrapper that pins the ref; if the network is gated on
+# demo day, render this offline and commit the result to
+# deploy/00-operators/gateway-api-crds-v1.3.0.yaml.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - https://github.com/kubernetes-sigs/gateway-api/config/crd/standard?ref=v1.3.0

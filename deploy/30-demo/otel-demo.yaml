@@ -1,0 +1,73 @@
+# OTel Demo — pinned v2.2.0. Carries HTTPRoute-ready manifests out of the box.
+#
+# Install per demo-steps §C6:
+#   helm upgrade --install otel-demo open-telemetry/opentelemetry-demo \
+#     --version 0.38.0 \                     # chart version mapping to demo v2.2.0
+#     --namespace otel-demo --create-namespace \
+#     --values deploy/30-demo/helm/values.yaml
+#
+# This file only carries the HTTPRoute + GRPCRoute that point at demo services
+# through the kgateway ingress. Mesh-bound GAMMA routes live in
+# `deploy/10-mesh/gamma-routes.yaml`.
+#
+# The hero demo beat flips the HTTPRoute `api` backendRef below.
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: api
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/part-of: otel-demo
+    demo.isitobservable.com/route-mode: ingress
+spec:
+  parentRefs:
+    - name: ingress
+      namespace: otel-demo
+  hostnames:
+    - api.demo.local
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/cart
+      backendRefs:
+        - name: cartservice
+          port: 8080
+          weight: 100
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/checkout
+      backendRefs:
+        - name: checkoutservice
+          port: 5050
+          weight: 100
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/product
+      backendRefs:
+        - name: productcatalogservice
+          port: 3550
+          weight: 100
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: cart
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/part-of: otel-demo
+    demo.isitobservable.com/route-mode: ingress
+spec:
+  parentRefs:
+    - name: ingress
+      namespace: otel-demo
+  rules:
+    - matches:
+        - method:
+            service: oteldemo.CheckoutService
+      backendRefs:
+        - name: checkoutservice
+          port: 5050

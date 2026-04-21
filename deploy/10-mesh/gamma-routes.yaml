@@ -1,0 +1,74 @@
+# GAMMA — Gateway API for Service Mesh (service-as-parentRef pattern).
+#
+# These routes attach directly to backend Services (not to a Gateway), so the
+# waypoint proxy applies the rules on east-west traffic inside the mesh —
+# without a dedicated ingress path. This is the pattern the talk uses to show
+# "ingress vs mesh" in one cluster against the same HTTPRoute CRD.
+#
+# Reference: gateway-api.sigs.k8s.io/mesh/gamma/
+# Board scope addition (ISI-680, 2026-04-21): "use GAMMA + illustrate mesh
+# policies on the demo workload."
+#
+# Install order: apply AFTER the ambient waypoint is Ready (demo-steps §C3)
+# but BEFORE OTel Demo workloads start receiving traffic (demo-steps §C6).
+#
+# The processor stamps the SAME normalized attributes on routes in both
+# ingress-bound and mesh-bound mode — this is the load-bearing demo claim.
+---
+# Mesh-bound canary for the cart service. parentRef is the Service itself —
+# Istio routes east-west traffic through the waypoint and applies the split.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: cartservice-mesh
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/part-of: otel-demo
+    demo.isitobservable.com/route-mode: mesh
+spec:
+  parentRefs:
+    - group: ""
+      kind: Service
+      name: cartservice
+      port: 8080
+  rules:
+    # Header-based canary — `x-canary: v2` goes to the canary Service,
+    # everything else stays on the stable Service. Gives us a clean slide:
+    # "same HTTPRoute CRD, now running east-west through the waypoint."
+    - matches:
+        - headers:
+            - name: x-canary
+              value: "v2"
+      backendRefs:
+        - name: cartservice-canary
+          port: 8080
+          weight: 100
+    - backendRefs:
+        - name: cartservice
+          port: 8080
+          weight: 100
+---
+# Mesh-bound GRPCRoute on the checkout service — exercises the same GAMMA
+# pattern on gRPC to prove parentRef=Service works across protocols.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: checkoutservice-mesh
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/part-of: otel-demo
+    demo.isitobservable.com/route-mode: mesh
+spec:
+  parentRefs:
+    - group: ""
+      kind: Service
+      name: checkoutservice
+      port: 5050
+  rules:
+    - matches:
+        - method:
+            service: oteldemo.CheckoutService
+      backendRefs:
+        - name: checkoutservice
+          port: 5050
+          weight: 100

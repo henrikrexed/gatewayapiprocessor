@@ -1,0 +1,167 @@
+# Custom OTel Collector running gatewayapiprocessor.
+# Pipeline placement per ISI-670 processor-spec §4.2:
+#   receivers → memory_limiter → k8sattributes → gatewayapiprocessor → batch → exporters
+#
+# Managed via the OTel Operator as an OpenTelemetryCollector CR so the demo
+# beat is "kubectl apply on a CR", not a raw Deployment patch.
+---
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otelcol
+  namespace: otel-system
+spec:
+  mode: deployment
+  replicas: 1
+  serviceAccount: otelcol
+  image: ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21
+  imagePullPolicy: IfNotPresent
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      protocol: TCP
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  env:
+    - name: K8S_NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+    # Dynatrace exporter env — populated by the Makefile from host env vars.
+    # Empty string means the Dynatrace exporter stays configured but inert.
+    - name: DT_TENANT_URL
+      valueFrom:
+        secretKeyRef:
+          name: dynatrace-otlp
+          key: endpoint
+          optional: true
+    - name: DT_API_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: dynatrace-otlp
+          key: api-token
+          optional: true
+  config: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      # Required FIRST — protects against backend stalls causing OOM.
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+
+      k8sattributes:
+        auth_type: "serviceAccount"
+        passthrough: false
+        extract:
+          metadata:
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.deployment.name
+            - k8s.namespace.name
+            - k8s.node.name
+            - k8s.pod.start_time
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.ip
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.uid
+          - sources:
+              - from: connection
+
+      # The reason we exist.
+      gatewayapiprocessor:
+        informers:
+          resync_period: 60s
+          sync_timeout: 30s
+        parsers:
+          # Default parser registry — Envoy-family covers Kgateway + Istio +
+          # Envoy Gateway; linkerd uses the label-based parser; fallback
+          # stamps k8s.gatewayapi.raw_route_name only.
+          envoy:
+            enabled: true
+          linkerd:
+            enabled: true
+          passthrough:
+            enabled: true
+        # Cardinality guard — skip UIDs on metrics (Istio Telemetry footgun).
+        attribute_policy:
+          metrics:
+            exclude:
+              - "k8s.gateway.uid"
+              - "k8s.httproute.uid"
+              - "k8s.grpcroute.uid"
+              - "k8s.gatewayclass.uid"
+        emit_status_conditions: true
+
+      batch:
+        send_batch_size: 1024
+        send_batch_max_size: 2048
+        timeout: 5s
+
+    exporters:
+      # Sole backend: Dynatrace OTLP-HTTP. Board scope lock-in (ISI-671,
+      # 2026-04-21) — Tempo/Prom stack was removed; portability claim is
+      # reframed as "demonstrated on Dynatrace, portable to any OTel-compliant
+      # backend via standard OTLP" (see ISI-669).
+      #
+      # Exporter stays configured but inert until the dynatrace-otlp Secret
+      # drops in (tracked on ISI-683 / ISI-698).
+      otlphttp/dynatrace:
+        endpoint: ${env:DT_TENANT_URL}
+        headers:
+          Authorization: "Api-Token ${env:DT_API_TOKEN}"
+        tls:
+          insecure: false
+
+      # Debug tap — stays in the pipeline but off by default. Flip to info
+      # during rehearsal only.
+      debug:
+        verbosity: basic
+
+    service:
+      telemetry:
+        metrics:
+          level: detailed
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors:
+            - memory_limiter
+            - k8sattributes
+            - gatewayapiprocessor
+            - batch
+          exporters: [otlphttp/dynatrace]
+        metrics:
+          receivers: [otlp]
+          processors:
+            - memory_limiter
+            - k8sattributes
+            - gatewayapiprocessor
+            - batch
+          exporters: [otlphttp/dynatrace]
+        logs:
+          receivers: [otlp]
+          processors:
+            - memory_limiter
+            - k8sattributes
+            - gatewayapiprocessor
+            - batch
+          exporters: [otlphttp/dynatrace]

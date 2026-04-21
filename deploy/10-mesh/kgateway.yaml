@@ -1,0 +1,31 @@
+# Kgateway — CNCF-donated Envoy-family controller, pinned v2.1.0.
+# Provides the external entrypoint (GatewayClass=kgateway).
+#
+# helm install per demo-steps §C4:
+#   helm upgrade --install kgateway oci://cr.kgateway.dev/kgateway-dev/charts/kgateway \
+#     --version v2.1.0 --namespace kgateway-system --create-namespace
+#
+# This file carries the GatewayClass + ingress Gateway in the `otel-demo`
+# namespace. The Gateway listens for HTTPRoutes in the same namespace.
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: kgateway
+spec:
+  controllerName: kgateway.dev/kgateway-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ingress
+  namespace: otel-demo
+spec:
+  gatewayClassName: kgateway
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same

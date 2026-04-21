@@ -1,0 +1,98 @@
+# OBI (opentelemetry-ebpf-instrumentation) — pinned v0.8.0.
+# Kernel-side eBPF auto-instrumentation; carries k8s.pod.*/k8s.node.* via
+# its k8s metadata enrichment so the processor can correlate with HTTPRoute
+# bindings.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: obi-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: obi
+  namespace: obi-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: obi
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "services", "replicationcontrollers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: obi
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: obi
+subjects:
+  - kind: ServiceAccount
+    name: obi
+    namespace: obi-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: obi
+  namespace: obi-system
+  labels:
+    app.kubernetes.io/name: obi
+    app.kubernetes.io/version: v0.8.0
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: obi
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: obi
+    spec:
+      serviceAccountName: obi
+      hostPID: true
+      hostNetwork: true
+      containers:
+        - name: obi
+          image: otel/opentelemetry-ebpf-instrumentation:v0.8.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+            capabilities:
+              add:
+                - SYS_ADMIN
+                - SYS_RESOURCE
+                - BPF
+                - PERFMON
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otelcol.otel-system.svc.cluster.local:4317"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_SERVICE_NAME
+              value: "obi"
+            - name: BEYLA_KUBE_METADATA_ENABLE
+              value: "true"
+            - name: BEYLA_DISCOVERY_POLL_INTERVAL
+              value: "5s"
+          volumeMounts:
+            - name: sys
+              mountPath: /sys
+              readOnly: true
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+      volumes:
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: proc
+          hostPath:
+            path: /proc

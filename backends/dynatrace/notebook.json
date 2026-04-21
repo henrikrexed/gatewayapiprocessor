@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "name": "ObsSummit Zelda — Gateway API misconfig",
+  "sections": [
+    {
+      "title": "HTTPRoute ResolvedRefs (now)",
+      "type": "dql",
+      "query": "fetch spans | filter k8s.httproute.resolved_refs == false | summarize count_failed = count(), by:{ k8s.httproute.name, k8s.gateway.name, bin(start_time, 10s) }"
+    },
+    {
+      "title": "5xx rate by HTTPRoute",
+      "type": "dql",
+      "query": "fetch metrics | filter metric.key == \"http.server.request.count\" and status_code startswith \"5\" | summarize sum = sum(value), by:{ k8s.httproute.name, bin(timeframe, 30s) }"
+    },
+    {
+      "title": "Failed requests — trace drill-in",
+      "type": "dql",
+      "query": "fetch spans | filter k8s.httproute.name == \"api\" and http.response.status_code >= 500 | sort start_time desc | limit 50"
+    },
+    {
+      "title": "Gateway status conditions (emit_status_conditions=true)",
+      "type": "dql",
+      "query": "fetch logs | filter attributes[\"otel.library.name\"] == \"gatewayapiprocessor\" and attributes[\"k8s.gateway.status.condition\"] != null"
+    }
+  ]
+}

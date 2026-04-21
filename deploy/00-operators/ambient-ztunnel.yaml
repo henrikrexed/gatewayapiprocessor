@@ -1,0 +1,35 @@
+# Istio ambient (ztunnel) — pinned 1.26.0.
+# Installs the ambient profile via helm; kept as a ConfigMap + manifest wrapper
+# so `kubectl apply -f` is the only command on stage.
+#
+# The Makefile runs the helm commands before this file is applied; this file
+# carries the NamespacedTelemetry config that turns on waypoint observability.
+#
+# To render the helm charts offline:
+#   helm template istio-base oci://gcr.io/istio-release/charts/base --version 1.26.0 \
+#     --namespace istio-system > deploy/00-operators/istio-base-1.26.0.yaml
+#   helm template ztunnel oci://gcr.io/istio-release/charts/ztunnel --version 1.26.0 \
+#     --namespace istio-system --set profile=ambient >> deploy/00-operators/ztunnel-1.26.0.yaml
+#
+# Then commit the rendered files and replace this wrapper with direct refs.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: istio-system
+  labels:
+    istio.io/rev: default
+---
+apiVersion: telemetry.istio.io/v1
+kind: Telemetry
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  # Surface ambient metrics/traces to the OTel Collector. Waypoint-scoped
+  # metrics are emitted with the k8s.httproute.* / k8s.gateway.* that the
+  # processor normalizes.
+  tracing:
+    - providers:
+        - name: opentelemetry
+      randomSamplingPercentage: 100.0

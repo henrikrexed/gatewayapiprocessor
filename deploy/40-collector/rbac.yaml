@@ -1,0 +1,55 @@
+# RBAC for the custom OTel Collector running gatewayapiprocessor.
+# Informers need: get/list/watch on Gateway, HTTPRoute, GRPCRoute, GatewayClass.
+# Plus k8sattributes needs: get/list/watch on pods/namespaces/nodes.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: otel-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otelcol
+  namespace: otel-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otelcol-gatewayapi
+rules:
+  # gatewayapiprocessor informers
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources:
+      - gateways
+      - httproutes
+      - grpcroutes
+      - gatewayclasses
+    verbs: ["get", "list", "watch"]
+  # k8sattributes processor
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets", "deployments", "daemonsets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  # Optional emit_status_conditions reads
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources:
+      - gateways/status
+      - httproutes/status
+      - grpcroutes/status
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otelcol-gatewayapi
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otelcol-gatewayapi
+subjects:
+  - kind: ServiceAccount
+    name: otelcol
+    namespace: otel-system

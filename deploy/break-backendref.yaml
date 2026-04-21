@@ -1,0 +1,47 @@
+# THE hero demo beat. Single `kubectl apply` flips the HTTPRoute's
+# backendRef.name to a Service that does not exist — triggers
+# ResolvedRefs=False, and the processor stamps
+# k8s.httproute.resolved_refs=false on every span/log/metric downstream.
+#
+# Reversion slide: see deploy/fix-backendref.yaml.
+# No referenceGrant bypass. No CVE-adjacent pattern (Challenger E1–E3).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: api
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/part-of: otel-demo
+    demo.isitobservable.com/stage: broken
+spec:
+  parentRefs:
+    - name: ingress
+      namespace: otel-demo
+  hostnames:
+    - api.demo.local
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/cart
+      backendRefs:
+        # THIS is the break — service does not exist.
+        - name: cartservice-v2
+          port: 8080
+          weight: 100
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/checkout
+      backendRefs:
+        - name: checkoutservice
+          port: 5050
+          weight: 100
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/product
+      backendRefs:
+        - name: productcatalogservice
+          port: 3550
+          weight: 100
