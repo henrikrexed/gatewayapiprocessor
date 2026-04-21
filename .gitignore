@@ -1,0 +1,16 @@
+# Build artifacts
+_build/
+/otelcol-gatewayapi
+*.out
+*.test
+
+# Go module cache / vendor
+/vendor/
+
+# Editor detritus
+.idea/
+.vscode/
+*.swp
+
+# Local env
+.env
