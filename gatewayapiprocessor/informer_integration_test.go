@@ -26,7 +26,11 @@ func TestInformerIntegration_AddUpdateDeleteHTTPRoute(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	client := gwfake.NewSimpleClientset()
+	// SA1019: NewClientset exists but does not register the v1 scheme the way
+	// NewSimpleClientset does, breaking Gateway/HTTPRoute informers in this
+	// fake setup. gateway-api upstream hasn't fully migrated; revisit when
+	// they ship the apply-config generators for the fake clientset.
+	client := gwfake.NewSimpleClientset() //nolint:staticcheck
 	factory := gwinformers.NewSharedInformerFactory(client, 0)
 
 	idx := newRouteIndex()
@@ -148,7 +152,11 @@ func TestInformerHandler_HTTPRouteTombstone(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	client := gwfake.NewSimpleClientset()
+	// SA1019: NewClientset exists but does not register the v1 scheme the way
+	// NewSimpleClientset does, breaking Gateway/HTTPRoute informers in this
+	// fake setup. gateway-api upstream hasn't fully migrated; revisit when
+	// they ship the apply-config generators for the fake clientset.
+	client := gwfake.NewSimpleClientset() //nolint:staticcheck
 	factory := gwinformers.NewSharedInformerFactory(client, 0)
 	inf := factory.Gateway().V1().HTTPRoutes().Informer()
 
