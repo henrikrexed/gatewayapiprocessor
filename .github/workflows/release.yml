@@ -9,6 +9,7 @@ permissions:
   contents: write
   packages: write
   id-token: write
+  security-events: write
 
 env:
   IMAGE_REGISTRY: ghcr.io/henrikrexed
@@ -22,10 +23,12 @@ concurrency:
 jobs:
   # ---------------------------------------------------------------------------
   # Cross-compile the OCB-produced collector binary for each target platform.
+  # Matches the OTel Collector contrib release surface: linux (amd64, arm64,
+  # 386, arm/v7, ppc64le, s390x), darwin (amd64, arm64), windows (amd64, arm64).
   # Each matrix entry produces one archive attached to the GitHub Release.
   # ---------------------------------------------------------------------------
   binaries:
-    name: Binary ${{ matrix.goos }}/${{ matrix.goarch }}
+    name: Binary ${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -37,6 +40,19 @@ jobs:
           - goos: linux
             goarch: arm64
             ext: ''
+          - goos: linux
+            goarch: '386'
+            ext: ''
+          - goos: linux
+            goarch: arm
+            goarm: '7'
+            ext: ''
+          - goos: linux
+            goarch: ppc64le
+            ext: ''
+          - goos: linux
+            goarch: s390x
+            ext: ''
           - goos: darwin
             goarch: amd64
             ext: ''
@@ -45,6 +61,9 @@ jobs:
             ext: ''
           - goos: windows
             goarch: amd64
+            ext: '.exe'
+          - goos: windows
+            goarch: arm64
             ext: '.exe'
     steps:
       - name: Checkout
@@ -67,11 +86,12 @@ jobs:
       - name: Install OCB
         run: go install go.opentelemetry.io/collector/cmd/builder@v${{ steps.ocb.outputs.version }}
 
-      - name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+      - name: Build (${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }})
         env:
           CGO_ENABLED: '0'
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
           GOFLAGS: '-trimpath'
         run: |
           builder --config=builder-config.yaml
@@ -84,7 +104,8 @@ jobs:
         run: |
           cd dist
           VERSION="${GITHUB_REF_NAME}"
-          BASE="otelcol-gatewayapi_${VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          ARCH_SUFFIX="${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }}"
+          BASE="otelcol-gatewayapi_${VERSION}_${{ matrix.goos }}_${ARCH_SUFFIX}"
           if [ "${{ matrix.goos }}" = "windows" ]; then
             zip "${BASE}.zip" "otelcol-gatewayapi${{ matrix.ext }}"
             sha256sum "${BASE}.zip" > "${BASE}.zip.sha256"
@@ -99,16 +120,44 @@ jobs:
       - name: Upload binary artifact
         uses: actions/upload-artifact@v7
         with:
-          name: binary-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: binary-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }}
           path: dist/otelcol-gatewayapi_*
           retention-days: 7
 
   # ---------------------------------------------------------------------------
-  # Multi-arch OCI image push to GHCR via buildx.
+  # Source-level vulnerability scan on the release ref (govulncheck).
+  # ---------------------------------------------------------------------------
+  govulncheck:
+    name: govulncheck (source)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: gatewayapiprocessor/go.sum
+
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: '1.25'
+          work-dir: gatewayapiprocessor
+
+  # ---------------------------------------------------------------------------
+  # Multi-arch OCI image push to GHCR via buildx. Matches distroless-static
+  # platform coverage: linux/amd64, linux/arm64, linux/arm/v7, linux/ppc64le,
+  # linux/s390x.
   # ---------------------------------------------------------------------------
   image:
     name: Multi-arch image
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      tags: ${{ steps.meta.outputs.tags }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -116,7 +165,7 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
         with:
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/ppc64le,linux/s390x
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -146,13 +195,13 @@ jobs:
             org.opencontainers.image.vendor=IsItObservable
             org.opencontainers.image.version=${{ github.ref_name }}
 
-      - name: Build and push (linux/amd64, linux/arm64)
+      - name: Build and push (linux amd64, arm64, arm/v7, ppc64le, s390x)
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/ppc64le,linux/s390x
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -161,8 +210,25 @@ jobs:
           provenance: true
           sbom: true
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless, OIDC)
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          # Sign each image ref by digest so all mirrors/aliases are covered.
+          for tag in ${TAGS}; do
+            name="${tag%:*}"
+            echo "Signing ${name}@${DIGEST}"
+            cosign sign --yes "${name}@${DIGEST}"
+          done
+
   # ---------------------------------------------------------------------------
-  # Image scan + SBOM generation for the release.
+  # Image scan for the release — SARIF is uploaded to the Security tab and
+  # kept as a build artifact.
   # ---------------------------------------------------------------------------
   scan:
     name: Trivy scan
@@ -170,7 +236,7 @@ jobs:
     needs: image
     steps:
       - name: Trivy image scan
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
           format: sarif
@@ -178,7 +244,14 @@ jobs:
           severity: CRITICAL,HIGH
           exit-code: '0'
 
-      - name: Upload Trivy SARIF
+      - name: Upload Trivy SARIF to code-scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-release
+
+      - name: Upload Trivy SARIF artifact
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -191,19 +264,32 @@ jobs:
     runs-on: ubuntu-latest
     needs: image
     steps:
-      - name: Generate SBOM with Syft
+      - name: Generate image SBOM with Syft
         uses: anchore/sbom-action@v0
         with:
           image: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
           format: cyclonedx-json
-          output-file: sbom.cyclonedx.json
+          output-file: sbom.image.cyclonedx.json
           upload-artifact: false
 
-      - name: Upload SBOM artifact
+      - name: Checkout (source SBOM)
+        uses: actions/checkout@v4
+
+      - name: Generate source SBOM with Syft
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: sbom.source.cyclonedx.json
+          upload-artifact: false
+
+      - name: Upload SBOM artifacts
         uses: actions/upload-artifact@v7
         with:
           name: sbom
-          path: sbom.cyclonedx.json
+          path: |
+            sbom.image.cyclonedx.json
+            sbom.source.cyclonedx.json
           retention-days: 90
 
   # ---------------------------------------------------------------------------
@@ -212,7 +298,7 @@ jobs:
   release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
-    needs: [binaries, image, sbom]
+    needs: [binaries, image, sbom, scan, govulncheck]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -232,6 +318,12 @@ jobs:
           name: sbom
           path: release-artifacts
 
+      - name: Download Trivy SARIF
+        uses: actions/download-artifact@v4
+        with:
+          name: trivy-sarif
+          path: release-artifacts
+
       - name: Generate changelog
         id: changelog
         run: |
@@ -239,7 +331,15 @@ jobs:
           {
             echo "## ${GITHUB_REF_NAME}"
             echo ""
-            echo "**Image:** \`${IMAGE_REGISTRY}/${IMAGE_NAME}:${GITHUB_REF_NAME}\` (linux/amd64, linux/arm64)"
+            echo "**Image:** \`${IMAGE_REGISTRY}/${IMAGE_NAME}:${GITHUB_REF_NAME}\`"
+            echo "**Platforms:** \`linux/amd64\`, \`linux/arm64\`, \`linux/arm/v7\`, \`linux/ppc64le\`, \`linux/s390x\`"
+            echo "**Signed with:** cosign (keyless, OIDC). Verify with:"
+            echo ""
+            echo '```'
+            echo "cosign verify ${IMAGE_REGISTRY}/${IMAGE_NAME}:${GITHUB_REF_NAME} \\"
+            echo "  --certificate-identity-regexp='https://github.com/henrikrexed/gatewayapiprocessor/.*' \\"
+            echo "  --certificate-oidc-issuer=https://token.actions.githubusercontent.com"
+            echo '```'
             echo ""
             echo "### Changes"
             if [ -n "$prev_tag" ]; then

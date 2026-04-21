@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  security-events: write
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -128,3 +129,77 @@ jobs:
       - name: Smoke-test binary (--help)
         run: |
           ./_build/otelcol-gatewayapi --help | head -20
+
+  # ---------------------------------------------------------------------------
+  # Security scans on PR + main. govulncheck, Trivy fs (vuln + secret +
+  # misconfig), and source SBOM on main pushes.
+  # ---------------------------------------------------------------------------
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: ${{ env.MODULE_DIR }}/go.sum
+
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: '1.25'
+          work-dir: ${{ env.MODULE_DIR }}
+
+  trivy-fs:
+    name: Trivy filesystem scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Trivy filesystem scan (vuln + secret, SARIF)
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          format: sarif
+          output: trivy-fs.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '0'
+
+      - name: Upload Trivy SARIF to code-scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+  sbom:
+    name: SBOM (CycloneDX, source)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate source SBOM with Syft
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: sbom.source.cyclonedx.json
+          upload-artifact: false
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom-source
+          path: sbom.source.cyclonedx.json
+          retention-days: 30
+
