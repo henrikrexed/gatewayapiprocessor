@@ -1,33 +1,39 @@
-# golangci-lint config for gatewayapiprocessor.
+# golangci-lint v2 config for gatewayapiprocessor.
 # CI runs: golangci-lint run --timeout=5m (see .github/workflows/ci.yml).
+# Migrated from v1 schema in ISI-693 (v1.x unsupported on Go 1.25 toolchain).
+version: "2"
+
 run:
   timeout: 5m
   go: "1.25"
 
 linters:
-  disable-all: true
+  default: none
   enable:
     - errcheck
     - govet
     - ineffassign
     - staticcheck
     - unused
-    - gofmt
-    - goimports
     - misspell
     - unconvert
     - revive
     - bodyclose
+  settings:
+    revive:
+      severity: warning
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - bodyclose
 
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - bodyclose
-
-linters-settings:
-  revive:
-    severity: warning
-  goimports:
-    local-prefixes: github.com/henrikrexed/gatewayapiprocessor
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/henrikrexed/gatewayapiprocessor

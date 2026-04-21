@@ -39,5 +39,10 @@ extensions:
 # Replace block: point OCB at the local processor module during development so
 # we don't round-trip through a GitHub tag for every iteration. CI strips this
 # before the image build (see .github/workflows/build.yaml).
+#
+# Path is relative to the generated go.mod inside output_path (./_build/go.mod),
+# so we have to step one level back out to reach the processor sources at the
+# repo root. Using ./gatewayapiprocessor resolves to _build/gatewayapiprocessor
+# and makes `go mod tidy` fail (see ISI-693).
 replaces:
-  - github.com/henrikrexed/gatewayapiprocessor/gatewayapiprocessor => ./gatewayapiprocessor
+  - github.com/henrikrexed/gatewayapiprocessor/gatewayapiprocessor => ../gatewayapiprocessor
