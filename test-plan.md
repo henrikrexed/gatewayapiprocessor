@@ -13,11 +13,11 @@ go test ./... -run=^$ -bench=. -benchmem           # benchmarks
 ```
 
 CI gate: both packages MUST pass with `-race` and coverage ≥ 80%.
-Current baseline (as of the ISI-684 expansion):
+Current baseline (as of the ISI-684 NFR-1 gate expansion):
 
 | Package                                                                            | Coverage | Tests |
 | ---------------------------------------------------------------------------------- | -------- | ----- |
-| `github.com/henrikrexed/gatewayapiprocessor/gatewayapiprocessor`                   | 81.7%    | 53    |
+| `github.com/henrikrexed/gatewayapiprocessor/gatewayapiprocessor`                   | 82.0%    | 56    |
 | `github.com/henrikrexed/gatewayapiprocessor/gatewayapiprocessor/parser`            | 97.0%    | 12    |
 
 ## Matrix overview
@@ -155,11 +155,41 @@ Single-span hot path sits at ~17µs — plenty of headroom under the collector's
 default per-batch budget. Linear scaling holds from 1k→10k, so the informer
 memory ceiling is bounded by the upsert benchmark: ~7.7MB per 10k routes.
 
+### `processor_nfr_test.go` (3 — PRD NFR-1 hard gate)
+
+These are regular Go tests (not benchmarks) that measure enrichment cost via
+`time.Since` and FAIL the build if the processor violates the PRD
+[ISI-690](/ISI/issues/ISI-690) §6 NFR-1 budget. Benchmarks above are
+reporting-only probes; this file is the assertion gate CI runs.
+
+| Test                                                               | Budget                     |
+| ------------------------------------------------------------------ | -------------------------- |
+| `TestNFR1_EnrichmentLatency_p95_10kRoutes_LE_100us`                | traces p95 ≤ 100µs/record  |
+| `TestNFR1_MetricsEnrichmentLatency_p95_10kRoutes_LE_100us`         | metrics p95 ≤ 100µs/record |
+| `TestNFR1_Throughput_10kRoutesCache_GE_9500rps`                    | ≥ 9500 records/sec sustained |
+
+Throughput budget derivation: the PRD allows ≤ 5% pipeline-throughput
+regression at 10k spans/sec when the processor is enabled. A 5% budget on
+10_000 rps is 500 rps, so the processor must sustain at least 9500 rps on its
+own before it becomes the pipeline bottleneck.
+
+Reference headroom from the ISI-684 NFR-1 run (go1.25, linux/amd64):
+
+```
+NFR-1 enrichment latency @ 10000-route cache: p50=1.2µs p95=4.0µs p99=10.9µs (budget p95 ≤ 100µs, 5000 samples)
+NFR-1 metrics enrichment latency @ 10000-route cache: p50=1.1µs p95=3.4µs p99=5.1µs (budget p95 ≤ 100µs, 5000 samples)
+NFR-1 throughput @ 10000-route cache: ~498000 rps (budget ≥ 9500 rps, 1s window)
+```
+
+The gate self-skips under `-short` and when `NFR1_SKIP=1` so fast dev loops
+stay green. CI runs the full suite without `-short`, so PR builds always
+enforce the budget.
+
 ## Coverage targets
 
 | Package                                  | Target | Actual |
 | ---------------------------------------- | ------ | ------ |
-| `gatewayapiprocessor` (main)             | ≥ 80%  | 81.7%  |
+| `gatewayapiprocessor` (main)             | ≥ 80%  | 82.0%  |
 | `gatewayapiprocessor/parser`             | ≥ 80%  | 97.0%  |
 
 Remaining uncovered lines live in `informer.go` (`newInformers`,
@@ -169,6 +199,8 @@ deploy time in the collector builder image, not in unit tests.
 ## CI expectations
 
 - `go test ./... -race -cover` — 0 failures, coverage ≥ 80% on both packages.
-- Benchmarks not gated on CI time; run on demand.
+- NFR-1 threshold-assertion gate (`TestNFR1_*` in `processor_nfr_test.go`)
+  runs as part of the default suite; no `-short`, no `NFR1_SKIP`.
+- Benchmarks not gated on CI time; run on demand for reporting.
 - No `kind` / no cluster dependency: every test uses a static lookup or the
   Gateway API fake clientset. CI image only needs the Go toolchain.
