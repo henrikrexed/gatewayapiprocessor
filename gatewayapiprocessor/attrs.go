@@ -4,12 +4,12 @@ package gatewayapiprocessor
 // bumping any of these is a breaking change. processor-spec §1.1/§1.2 is
 // the canonical source — keep that in sync with this file.
 const (
-	AttrGatewayName             = "k8s.gateway.name"
-	AttrGatewayNamespace        = "k8s.gateway.namespace"
-	AttrGatewayUID              = "k8s.gateway.uid"
-	AttrGatewayListenerName     = "k8s.gateway.listener.name"
-	AttrGatewayClassName        = "k8s.gatewayclass.name"
-	AttrGatewayClassController  = "k8s.gatewayclass.controller"
+	AttrGatewayName            = "k8s.gateway.name"
+	AttrGatewayNamespace       = "k8s.gateway.namespace"
+	AttrGatewayUID             = "k8s.gateway.uid"
+	AttrGatewayListenerName    = "k8s.gateway.listener.name"
+	AttrGatewayClassName       = "k8s.gatewayclass.name"
+	AttrGatewayClassController = "k8s.gatewayclass.controller"
 
 	AttrHTTPRouteName         = "k8s.httproute.name"
 	AttrHTTPRouteNamespace    = "k8s.httproute.namespace"

@@ -5,8 +5,9 @@ package parser
 // opaque route id to the configured passthrough attribute.
 //
 // processor-spec §1.3 pins the fallback attributes:
-//   k8s.gatewayapi.raw_route_name
-//   k8s.gatewayapi.parser
+//
+//	k8s.gatewayapi.raw_route_name
+//	k8s.gatewayapi.parser
 //
 // passthrough emits Matched=true with Namespace/Name empty — the processor
 // will skip HTTPRoute lookup and still stamp the raw+parser attributes.

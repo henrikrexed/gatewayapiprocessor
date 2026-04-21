@@ -23,11 +23,11 @@ type Config struct {
 	AuthType       AuthType `mapstructure:"auth_type"`
 	KubeConfigPath string   `mapstructure:"kube_config_path"`
 
-	Watch            WatchConfig           `mapstructure:"watch"`
-	Parsers          []ParserConfig        `mapstructure:"parsers"`
-	Enrich           EnrichConfig          `mapstructure:"enrich"`
-	EmitStatusConds  bool                  `mapstructure:"emit_status_conditions"`
-	BackendRefFallba BackendRefFallback    `mapstructure:"backendref_fallback"`
+	Watch            WatchConfig        `mapstructure:"watch"`
+	Parsers          []ParserConfig     `mapstructure:"parsers"`
+	Enrich           EnrichConfig       `mapstructure:"enrich"`
+	EmitStatusConds  bool               `mapstructure:"emit_status_conditions"`
+	BackendRefFallba BackendRefFallback `mapstructure:"backendref_fallback"`
 
 	// InformerSyncTimeout bounds Start() waiting for informer caches to warm up.
 	// Default 30s per processor-spec §2.4.

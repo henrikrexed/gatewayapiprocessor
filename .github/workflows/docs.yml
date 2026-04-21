@@ -28,27 +28,16 @@ jobs:
   build:
     name: Build mkdocs site
     runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0  # mkdocs-material git-revision plugin needs history.
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-          cache: pip
-
-      - name: Install mkdocs + plugins
-        run: |
-          python -m pip install --upgrade pip
-          pip install \
-            mkdocs==1.6.1 \
-            mkdocs-material==9.5.44 \
-            mkdocs-git-revision-date-localized-plugin==1.2.9 \
-            pymdown-extensions==10.11.2
-
+      # Gate first so we don't run setup-python (which fails on `cache: pip`
+      # when no requirements.txt / pyproject.toml is present yet — ISI-693).
       - name: Bail out if mkdocs.yml missing
         id: check
         run: |
@@ -57,6 +46,28 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Python
+        if: steps.check.outputs.skip == 'false'
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+
+      - name: Install mkdocs + plugins
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f docs/requirements.txt ]; then
+            pip install -r docs/requirements.txt
+          else
+            pip install \
+              mkdocs==1.6.1 \
+              mkdocs-material==9.5.44 \
+              mkdocs-git-revision-date-localized-plugin==1.2.9 \
+              pymdown-extensions==10.11.2
           fi
 
       - name: Build site
@@ -71,7 +82,7 @@ jobs:
 
   deploy:
     name: Deploy to GitHub Pages
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.build.outputs.skip == 'false'
     needs: build
     runs-on: ubuntu-latest
     environment:

@@ -19,12 +19,12 @@ type RouteAttributes struct {
 	ResolvedRefs *bool
 
 	// Parent Gateway (resolved from route.spec.parentRefs[0]).
-	GatewayName                 string
-	GatewayNamespace            string
-	GatewayUID                  string
-	GatewayListenerName         string
-	GatewayClassName            string
-	GatewayClassControllerName  string
+	GatewayName                string
+	GatewayNamespace           string
+	GatewayUID                 string
+	GatewayListenerName        string
+	GatewayClassName           string
+	GatewayClassControllerName string
 }
 
 // RouteKind enumerates the CR kinds the processor enriches from.

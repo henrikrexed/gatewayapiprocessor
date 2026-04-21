@@ -91,11 +91,11 @@ jobs:
           cache-dependency-path: ${{ env.MODULE_DIR }}/go.sum
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          # Last v1-line release; v2.x changed the config schema.
-          # Migration to v2 is tracked as a follow-up so this PR stays scoped to the OTEL bump.
-          version: v1.64.8
+          # v2 required: v1.64.8 was built with Go 1.24 and rejects the Go 1.25
+          # toolchain the repo pins (ISI-687). .golangci.yml migrated to v2 schema.
+          version: v2.11.4
           working-directory: ${{ env.MODULE_DIR }}
           args: --timeout=5m
 

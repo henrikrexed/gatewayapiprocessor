@@ -11,7 +11,9 @@ import (
 // the regex is configurable (see processor-spec §2.2 `format_regex`).
 //
 // Canonical format:
-//   httproute/<namespace>/<name>/rule/<rule_index>/match/<match_index>
+//
+//	httproute/<namespace>/<name>/rule/<rule_index>/match/<match_index>
+//
 // Trailing /rule and /match segments are optional — TestEnvoyParser_NoRuleNoMatch
 // enforces that partial strings still yield (namespace, name).
 type EnvoyParser struct {
