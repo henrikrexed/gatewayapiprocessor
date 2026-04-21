@@ -5,8 +5,8 @@
 #
 # Build context is the repo root. buildx handles TARGETOS/TARGETARCH.
 
-ARG GO_VERSION=1.24
-ARG OCB_VERSION=0.124.0
+ARG GO_VERSION=1.25
+ARG OCB_VERSION=0.150.0
 
 # -----------------------------------------------------------------------------
 # Stage 1 — OCB builder

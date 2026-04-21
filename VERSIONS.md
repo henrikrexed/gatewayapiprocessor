@@ -3,7 +3,7 @@
 Pinned manifest for the `gatewayapiprocessor` demo stack.
 
 **Date:** 2026-04-21
-**Freeze status:** `demo-locked` after rehearsal (see [ISI-671](https://paperclip.isitobservable.com/ISI/issues/ISI-671)).
+**Freeze status:** `demo-locked` after rehearsal (see [ISI-671](https://paperclip.isitobservable.com/ISI/issues/ISI-671)); OTel stack rebased onto v0.150 per [ISI-687](https://paperclip.isitobservable.com/ISI/issues/ISI-687).
 **Update discipline:** version bumps require a PR against this file. Any bump triggers re-record of the pre-recorded fallback clip.
 
 | Component                     | Pinned version | Why pinned                                                          |
@@ -12,8 +12,8 @@ Pinned manifest for the `gatewayapiprocessor` demo stack.
 | Gateway API CRDs              | v1.3.0         | Standard channel; matches Phase-1 research baseline (ISI-665)       |
 | Istio (ambient profile)       | 1.26.0         | Ambient GA; waypoint `Telemetry` API stable                         |
 | Kgateway                      | v2.1.0         | CNCF-donated release; `HttpListenerPolicy` available                |
-| OTel Operator                 | v0.124.0       | Matches collector version pin                                       |
-| OTel Collector (OCB build)    | v0.124.0       | Baseline for contrib processors this quarter                        |
+| OTel Operator                 | v0.150.0       | Matches collector version pin (bumped by ISI-687)                   |
+| OTel Collector (OCB build)    | v0.150.0       | Latest 0.150 release line; stable modules at v1.56.0                |
 | OBI (opentelemetry-ebpf-...)  | v0.8.0         | Current release; k8s metadata enrichment available                  |
 | OTel Demo                     | v2.2.0         | Carries HTTPRoute-ready manifests                                   |
 | OpenTelemetry semconv         | 1.40.0         | Baseline for `http.*`, `k8s.*`; no upstream `k8s.gateway.*` yet     |
@@ -22,7 +22,7 @@ Pinned manifest for the `gatewayapiprocessor` demo stack.
 | Loki                          | 3.2            | Compose file pin                                                    |
 | Prometheus                    | 3.1            | Compose file pin                                                    |
 | Dynatrace OTel endpoint       | SaaS           | DT tenant env + token in Makefile from env vars                     |
-| Go                            | 1.23           | Matches otel-contrib baseline                                       |
+| Go                            | 1.25           | Required by OTel Collector v0.150 modules (bumped by ISI-687)       |
 
 ## Image tags
 
