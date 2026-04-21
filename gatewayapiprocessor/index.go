@@ -1,6 +1,7 @@
 package gatewayapiprocessor
 
 import (
+	"context"
 	"sync"
 
 	gwv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -28,6 +29,22 @@ type routeIndex struct {
 	// claimedBackends records which (ns/service) keys already have an owner,
 	// so we can detect ambiguity on subsequent updates.
 	claimedBackends map[string]string // key -> "<kind>|<ns>/<name>" owner
+
+	// indexedLabels carries the last (gateway_class, route_kind) tuple
+	// emitted to the routes_indexed UpDownCounter for a given key, so we can
+	// emit a matching -1 on delete (or a swap if gateway_class changed on
+	// update). Nil when telemetry is not wired in (e.g. unit tests).
+	indexedLabels map[string]routeIndexLabel
+
+	// tel is the self-telemetry hook. Nil when the index runs without a
+	// wired-up telemetry builder (direct unit-test construction).
+	tel *telemetryBuilder
+}
+
+// routeIndexLabel is the low-cardinality tuple we attach to routes_indexed.
+type routeIndexLabel struct {
+	gatewayClass string
+	routeKind    string
 }
 
 func newRouteIndex() *routeIndex {
@@ -35,7 +52,17 @@ func newRouteIndex() *routeIndex {
 		routes:          make(map[string]RouteAttributes),
 		backendIndex:    make(map[string]RouteAttributes),
 		claimedBackends: make(map[string]string),
+		indexedLabels:   make(map[string]routeIndexLabel),
 	}
+}
+
+// attachTelemetry wires the telemetry builder for informer event counters and
+// the routes_indexed UpDownCounter. Call this right after newRouteIndex() and
+// before any upsert — safe to omit (no-op) in tests.
+func (r *routeIndex) attachTelemetry(tel *telemetryBuilder) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tel = tel
 }
 
 // LookupRoute satisfies RouteLookup.
@@ -54,6 +81,19 @@ func (r *routeIndex) LookupByBackendService(ns, svc string) (RouteAttributes, bo
 	return ra, ok
 }
 
+// IsAmbiguousBackend returns true when the given (namespace, service) key was
+// ever claimed by a route but is no longer resolvable because multiple routes
+// referenced the same Service. Used by the self-telemetry path to distinguish
+// "ambiguous" from "unresolved" misses on the backendRef fallback.
+func (r *routeIndex) IsAmbiguousBackend(ns, svc string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	key := ns + "/" + svc
+	_, claimed := r.claimedBackends[key]
+	_, indexed := r.backendIndex[key]
+	return claimed && !indexed
+}
+
 // upsertHTTPRoute applies a full RouteAttributes + backendRef list from a
 // decoded HTTPRoute object. The informer event handlers build the struct and
 // call this; tests call it directly to simulate cache state.
@@ -61,6 +101,7 @@ func (r *routeIndex) upsertHTTPRoute(ra RouteAttributes, backendRefs []backendRe
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := routeKey(RouteKindHTTPRoute, ra.Namespace, ra.Name)
+	_, existed := r.routes[key]
 	r.routes[key] = ra
 	owner := key
 	for _, b := range backendRefs {
@@ -74,13 +115,17 @@ func (r *routeIndex) upsertHTTPRoute(ra RouteAttributes, backendRefs []backendRe
 		r.claimedBackends[bkey] = owner
 		r.backendIndex[bkey] = ra
 	}
+	r.updateIndexedLabelLocked(key, "HTTPRoute", ra.GatewayClassName, existed)
 }
 
 // upsertGRPCRoute mirrors upsertHTTPRoute for GRPCRoute CRs.
 func (r *routeIndex) upsertGRPCRoute(ra RouteAttributes) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.routes[routeKey(RouteKindGRPCRoute, ra.Namespace, ra.Name)] = ra
+	key := routeKey(RouteKindGRPCRoute, ra.Namespace, ra.Name)
+	_, existed := r.routes[key]
+	r.routes[key] = ra
+	r.updateIndexedLabelLocked(key, "GRPCRoute", ra.GatewayClassName, existed)
 }
 
 // deleteHTTPRoute removes a route and its backendRef attribution entries.
@@ -95,12 +140,56 @@ func (r *routeIndex) deleteHTTPRoute(ns, name string) {
 			delete(r.backendIndex, bkey)
 		}
 	}
+	r.removeIndexedLabelLocked(key)
 }
 
 func (r *routeIndex) deleteGRPCRoute(ns, name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.routes, routeKey(RouteKindGRPCRoute, ns, name))
+	key := routeKey(RouteKindGRPCRoute, ns, name)
+	delete(r.routes, key)
+	r.removeIndexedLabelLocked(key)
+}
+
+// updateIndexedLabelLocked maintains the routes_indexed UpDownCounter on
+// upsert. Caller must hold the write lock. It emits:
+//   - +1 when the key is new
+//   - 0 when the labels are unchanged
+//   - -1 on the previous label + +1 on the new label when gateway_class shifts
+//
+// We never encode the route name / UID in the labels — only (gateway_class,
+// route_kind). See processor-spec §1.4 cardinality guard.
+func (r *routeIndex) updateIndexedLabelLocked(key, routeKind, gatewayClass string, existed bool) {
+	if r.tel == nil {
+		return
+	}
+	newLabel := routeIndexLabel{gatewayClass: gatewayClass, routeKind: routeKind}
+	prev, wasIndexed := r.indexedLabels[key]
+	if !existed || !wasIndexed {
+		r.tel.recordRoutesIndexedDelta(context.Background(), newLabel.gatewayClass, newLabel.routeKind, 1)
+		r.indexedLabels[key] = newLabel
+		return
+	}
+	if prev == newLabel {
+		return
+	}
+	r.tel.recordRoutesIndexedDelta(context.Background(), prev.gatewayClass, prev.routeKind, -1)
+	r.tel.recordRoutesIndexedDelta(context.Background(), newLabel.gatewayClass, newLabel.routeKind, 1)
+	r.indexedLabels[key] = newLabel
+}
+
+// removeIndexedLabelLocked emits -1 on the key's last known labels and drops
+// the mapping. Caller must hold the write lock.
+func (r *routeIndex) removeIndexedLabelLocked(key string) {
+	if r.tel == nil {
+		return
+	}
+	prev, ok := r.indexedLabels[key]
+	if !ok {
+		return
+	}
+	r.tel.recordRoutesIndexedDelta(context.Background(), prev.gatewayClass, prev.routeKind, -1)
+	delete(r.indexedLabels, key)
 }
 
 // backendRef is the narrowed projection of HTTPRouteRule.BackendRefs we keep

@@ -25,7 +25,7 @@ import (
 //  2. Start 4 shared informers (Gateway, HTTPRoute, GRPCRoute, GatewayClass).
 //  3. Wait for all 4 caches to sync before returning.
 //  4. Fail fast on sync timeout.
-func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLookup, func(context.Context) error, error) {
+func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config, tel *telemetryBuilder) (RouteLookup, func(context.Context) error, error) {
 	restCfg, err := buildRESTConfig(cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build rest config: %w", err)
@@ -53,11 +53,17 @@ func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLo
 	}
 
 	index := newRouteIndex()
+	index.attachTelemetry(tel)
 	gwStore := newGatewayStore()
 	gcStore := newGatewayClassStore()
 
 	// Collect all shared informers we start so we can wait on their sync.
 	var informers []cache.SharedIndexInformer
+	type resourceInformer struct {
+		resource string
+		inf      cache.SharedIndexInformer
+	}
+	var toAwait []resourceInformer
 
 	for _, f := range factories {
 		hrInf := f.Gateway().V1().HTTPRoutes().Informer()
@@ -65,22 +71,36 @@ func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLo
 		gwInf := f.Gateway().V1().Gateways().Informer()
 		gcInf := f.Gateway().V1().GatewayClasses().Informer()
 
-		registerHTTPRouteHandlers(hrInf, index, gwStore, gcStore, cfg, logger)
-		registerGRPCRouteHandlers(grInf, index, gwStore, gcStore, cfg, logger)
-		registerGatewayHandlers(gwInf, gwStore, logger)
-		registerGatewayClassHandlers(gcInf, gcStore, logger)
+		registerHTTPRouteHandlers(hrInf, index, gwStore, gcStore, cfg, logger, tel)
+		registerGRPCRouteHandlers(grInf, index, gwStore, gcStore, cfg, logger, tel)
+		registerGatewayHandlers(gwInf, gwStore, logger, tel)
+		registerGatewayClassHandlers(gcInf, gcStore, logger, tel)
 
 		informers = append(informers, hrInf, grInf, gwInf, gcInf)
+		toAwait = append(toAwait,
+			resourceInformer{resource: "HTTPRoute", inf: hrInf},
+			resourceInformer{resource: "GRPCRoute", inf: grInf},
+			resourceInformer{resource: "Gateway", inf: gwInf},
+			resourceInformer{resource: "GatewayClass", inf: gcInf},
+		)
 
 		f.Start(ctx.Done())
 	}
 
 	syncCtx, cancel := context.WithTimeout(ctx, defaultSyncTimeout(cfg.InformerSyncTimeout))
 	defer cancel()
-	for _, inf := range informers {
-		if !cache.WaitForCacheSync(syncCtx.Done(), inf.HasSynced) {
-			return nil, nil, fmt.Errorf("gatewayapiprocessor: informer cache sync timed out after %s", defaultSyncTimeout(cfg.InformerSyncTimeout))
+	for _, ri := range toAwait {
+		if !cache.WaitForCacheSync(syncCtx.Done(), ri.inf.HasSynced) {
+			logger.Error("gatewayapiprocessor: informer cache sync timed out",
+				zap.String("resource", ri.resource),
+				zap.Duration("timeout", defaultSyncTimeout(cfg.InformerSyncTimeout)),
+			)
+			return nil, nil, fmt.Errorf("gatewayapiprocessor: %s informer cache sync timed out after %s", ri.resource, defaultSyncTimeout(cfg.InformerSyncTimeout))
 		}
+		if tel != nil {
+			tel.recordInformerEvent(ctx, ri.resource, "sync")
+		}
+		logger.Info("gatewayapiprocessor: informer cache synced", zap.String("resource", ri.resource))
 	}
 
 	stop := func(_ context.Context) error {
@@ -111,7 +131,7 @@ func defaultSyncTimeout(v time.Duration) time.Duration {
 
 // --- event handlers ---
 
-func registerHTTPRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, gwStore *gatewayStore, gcStore *gatewayClassStore, cfg *Config, logger *zap.Logger) {
+func registerHTTPRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, gwStore *gatewayStore, gcStore *gatewayClassStore, cfg *Config, logger *zap.Logger, tel *telemetryBuilder) {
 	_, _ = inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
 			hr, ok := obj.(*gwv1.HTTPRoute)
@@ -120,6 +140,9 @@ func registerHTTPRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, g
 			}
 			ra := httpRouteToAttrs(hr, gwStore, gcStore, cfg)
 			idx.upsertHTTPRoute(ra, backendRefsFromHTTPRoute(hr))
+			if tel != nil {
+				tel.recordInformerEvent(context.Background(), "HTTPRoute", "add")
+			}
 		},
 		UpdateFunc: func(_, newObj any) {
 			hr, ok := newObj.(*gwv1.HTTPRoute)
@@ -128,6 +151,9 @@ func registerHTTPRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, g
 			}
 			ra := httpRouteToAttrs(hr, gwStore, gcStore, cfg)
 			idx.upsertHTTPRoute(ra, backendRefsFromHTTPRoute(hr))
+			if tel != nil {
+				tel.recordInformerEvent(context.Background(), "HTTPRoute", "update")
+			}
 		},
 		DeleteFunc: func(obj any) {
 			hr, ok := obj.(*gwv1.HTTPRoute)
@@ -136,6 +162,9 @@ func registerHTTPRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, g
 				if t, isT := obj.(cache.DeletedFinalStateUnknown); isT {
 					if hr2, ok2 := t.Obj.(*gwv1.HTTPRoute); ok2 {
 						idx.deleteHTTPRoute(hr2.Namespace, hr2.Name)
+						if tel != nil {
+							tel.recordInformerEvent(context.Background(), "HTTPRoute", "delete")
+						}
 						return
 					}
 				}
@@ -143,11 +172,14 @@ func registerHTTPRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, g
 				return
 			}
 			idx.deleteHTTPRoute(hr.Namespace, hr.Name)
+			if tel != nil {
+				tel.recordInformerEvent(context.Background(), "HTTPRoute", "delete")
+			}
 		},
 	})
 }
 
-func registerGRPCRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, gwStore *gatewayStore, gcStore *gatewayClassStore, cfg *Config, logger *zap.Logger) {
+func registerGRPCRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, gwStore *gatewayStore, gcStore *gatewayClassStore, cfg *Config, logger *zap.Logger, tel *telemetryBuilder) {
 	_, _ = inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
 			gr, ok := obj.(*gwv1.GRPCRoute)
@@ -155,6 +187,9 @@ func registerGRPCRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, g
 				return
 			}
 			idx.upsertGRPCRoute(grpcRouteToAttrs(gr, gwStore, gcStore, cfg))
+			if tel != nil {
+				tel.recordInformerEvent(context.Background(), "GRPCRoute", "add")
+			}
 		},
 		UpdateFunc: func(_, newObj any) {
 			gr, ok := newObj.(*gwv1.GRPCRoute)
@@ -162,6 +197,9 @@ func registerGRPCRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, g
 				return
 			}
 			idx.upsertGRPCRoute(grpcRouteToAttrs(gr, gwStore, gcStore, cfg))
+			if tel != nil {
+				tel.recordInformerEvent(context.Background(), "GRPCRoute", "update")
+			}
 		},
 		DeleteFunc: func(obj any) {
 			gr, ok := obj.(*gwv1.GRPCRoute)
@@ -169,6 +207,9 @@ func registerGRPCRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, g
 				if t, isT := obj.(cache.DeletedFinalStateUnknown); isT {
 					if gr2, ok2 := t.Obj.(*gwv1.GRPCRoute); ok2 {
 						idx.deleteGRPCRoute(gr2.Namespace, gr2.Name)
+						if tel != nil {
+							tel.recordInformerEvent(context.Background(), "GRPCRoute", "delete")
+						}
 						return
 					}
 				}
@@ -176,29 +217,56 @@ func registerGRPCRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, g
 				return
 			}
 			idx.deleteGRPCRoute(gr.Namespace, gr.Name)
-		},
-	})
-}
-
-func registerGatewayHandlers(inf cache.SharedIndexInformer, store *gatewayStore, _ *zap.Logger) {
-	_, _ = inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj any) { store.upsert(obj.(*gwv1.Gateway)) },
-		UpdateFunc: func(_, n any) { store.upsert(n.(*gwv1.Gateway)) },
-		DeleteFunc: func(obj any) {
-			if gw, ok := obj.(*gwv1.Gateway); ok {
-				store.delete(gw.Namespace, gw.Name)
+			if tel != nil {
+				tel.recordInformerEvent(context.Background(), "GRPCRoute", "delete")
 			}
 		},
 	})
 }
 
-func registerGatewayClassHandlers(inf cache.SharedIndexInformer, store *gatewayClassStore, _ *zap.Logger) {
+func registerGatewayHandlers(inf cache.SharedIndexInformer, store *gatewayStore, _ *zap.Logger, tel *telemetryBuilder) {
+	bump := func(event string) {
+		if tel != nil {
+			tel.recordInformerEvent(context.Background(), "Gateway", event)
+		}
+	}
 	_, _ = inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj any) { store.upsert(obj.(*gwv1.GatewayClass)) },
-		UpdateFunc: func(_, n any) { store.upsert(n.(*gwv1.GatewayClass)) },
+		AddFunc: func(obj any) {
+			store.upsert(obj.(*gwv1.Gateway))
+			bump("add")
+		},
+		UpdateFunc: func(_, n any) {
+			store.upsert(n.(*gwv1.Gateway))
+			bump("update")
+		},
+		DeleteFunc: func(obj any) {
+			if gw, ok := obj.(*gwv1.Gateway); ok {
+				store.delete(gw.Namespace, gw.Name)
+				bump("delete")
+			}
+		},
+	})
+}
+
+func registerGatewayClassHandlers(inf cache.SharedIndexInformer, store *gatewayClassStore, _ *zap.Logger, tel *telemetryBuilder) {
+	bump := func(event string) {
+		if tel != nil {
+			tel.recordInformerEvent(context.Background(), "GatewayClass", event)
+		}
+	}
+	_, _ = inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj any) {
+			store.upsert(obj.(*gwv1.GatewayClass))
+			bump("add")
+		},
+		UpdateFunc: func(_, n any) {
+			store.upsert(n.(*gwv1.GatewayClass))
+			bump("update")
+		},
 		DeleteFunc: func(obj any) {
 			if gc, ok := obj.(*gwv1.GatewayClass); ok {
 				store.delete(gc.Name)
+				bump("delete")
 			}
 		},
 	})

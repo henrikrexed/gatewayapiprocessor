@@ -3,6 +3,7 @@ package gatewayapiprocessor
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
@@ -22,6 +23,7 @@ import (
 type gatewayAPIProcessor struct {
 	cfg    *Config
 	logger *zap.Logger
+	tel    *telemetryBuilder
 
 	parsers            []parser.Parser
 	passthroughAttrKey string // empty if no passthrough parser configured
@@ -46,9 +48,14 @@ func newProcessor(set processor.Settings, cfg *Config) (*gatewayAPIProcessor, er
 	if err != nil {
 		return nil, err
 	}
+	tel, err := newTelemetryBuilder(set.TelemetrySettings, set.Logger)
+	if err != nil {
+		return nil, fmt.Errorf("gatewayapiprocessor: build telemetry: %w", err)
+	}
 	return &gatewayAPIProcessor{
 		cfg:                cfg,
 		logger:             set.Logger,
+		tel:                tel,
 		parsers:            parsers,
 		passthroughAttrKey: passthroughKey,
 		lookup:             newStaticLookup(), // replaced in Start() when informers wire up
@@ -87,16 +94,29 @@ func buildParserChain(pcs []ParserConfig) ([]parser.Parser, string, error) {
 // --- component.Component ---
 
 func (p *gatewayAPIProcessor) Start(ctx context.Context, _ component.Host) error {
+	// INFO-level startup summary so operators can see the feature matrix in the
+	// Collector log without scraping metrics first.
+	p.logger.Info("gatewayapiprocessor starting",
+		zap.Bool("enrich.traces", p.cfg.Enrich.Traces),
+		zap.Bool("enrich.logs", p.cfg.Enrich.Logs),
+		zap.Bool("enrich.metrics", p.cfg.Enrich.Metrics),
+		zap.Bool("emit_status_conditions", p.cfg.EmitStatusConds),
+		zap.Bool("backend_ref_fallback.enabled", p.cfg.BackendRefFallba.Enabled),
+		zap.Int("parsers", len(p.parsers)),
+	)
+
 	if p.startHook == nil {
 		// Non-Kubernetes mode / tests with static lookup: nothing to warm up.
 		return nil
 	}
 	lookup, stop, err := p.startHook(ctx)
 	if err != nil {
+		p.logger.Error("gatewayapiprocessor informer start failed", zap.Error(err))
 		return fmt.Errorf("gatewayapiprocessor start: %w", err)
 	}
 	p.lookup = lookup
 	p.stopFn = stop
+	p.logger.Info("gatewayapiprocessor informers synced")
 	return nil
 }
 
@@ -115,20 +135,22 @@ func (p *gatewayAPIProcessor) Capabilities() consumer.Capabilities {
 
 func (p *gatewayAPIProcessor) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
 	if p.cfg.Enrich.Traces {
-		rss := td.ResourceSpans()
-		for i := 0; i < rss.Len(); i++ {
-			rs := rss.At(i)
-			resourceAttrs := rs.Resource().Attributes()
-			sss := rs.ScopeSpans()
-			for j := 0; j < sss.Len(); j++ {
-				ss := sss.At(j)
-				spans := ss.Spans()
-				for k := 0; k < spans.Len(); k++ {
-					span := spans.At(k)
-					p.enrich(resourceAttrs, span.Attributes(), signalTraces)
+		ctx = p.enrichBatch(ctx, signalTraces, td.SpanCount(), func(ctx context.Context) {
+			rss := td.ResourceSpans()
+			for i := 0; i < rss.Len(); i++ {
+				rs := rss.At(i)
+				resourceAttrs := rs.Resource().Attributes()
+				sss := rs.ScopeSpans()
+				for j := 0; j < sss.Len(); j++ {
+					ss := sss.At(j)
+					spans := ss.Spans()
+					for k := 0; k < spans.Len(); k++ {
+						span := spans.At(k)
+						p.enrich(ctx, resourceAttrs, span.Attributes(), signalTraces)
+					}
 				}
 			}
-		}
+		})
 	}
 	if p.tracesNext != nil {
 		return p.tracesNext.ConsumeTraces(ctx, td)
@@ -140,20 +162,22 @@ func (p *gatewayAPIProcessor) ConsumeTraces(ctx context.Context, td ptrace.Trace
 
 func (p *gatewayAPIProcessor) ConsumeLogs(ctx context.Context, ld plog.Logs) error {
 	if p.cfg.Enrich.Logs {
-		rls := ld.ResourceLogs()
-		for i := 0; i < rls.Len(); i++ {
-			rl := rls.At(i)
-			resourceAttrs := rl.Resource().Attributes()
-			sls := rl.ScopeLogs()
-			for j := 0; j < sls.Len(); j++ {
-				sl := sls.At(j)
-				recs := sl.LogRecords()
-				for k := 0; k < recs.Len(); k++ {
-					rec := recs.At(k)
-					p.enrich(resourceAttrs, rec.Attributes(), signalLogs)
+		ctx = p.enrichBatch(ctx, signalLogs, ld.LogRecordCount(), func(ctx context.Context) {
+			rls := ld.ResourceLogs()
+			for i := 0; i < rls.Len(); i++ {
+				rl := rls.At(i)
+				resourceAttrs := rl.Resource().Attributes()
+				sls := rl.ScopeLogs()
+				for j := 0; j < sls.Len(); j++ {
+					sl := sls.At(j)
+					recs := sl.LogRecords()
+					for k := 0; k < recs.Len(); k++ {
+						rec := recs.At(k)
+						p.enrich(ctx, resourceAttrs, rec.Attributes(), signalLogs)
+					}
 				}
 			}
-		}
+		})
 	}
 	if p.logsNext != nil {
 		return p.logsNext.ConsumeLogs(ctx, ld)
@@ -165,20 +189,22 @@ func (p *gatewayAPIProcessor) ConsumeLogs(ctx context.Context, ld plog.Logs) err
 
 func (p *gatewayAPIProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
 	if p.cfg.Enrich.Metrics {
-		rms := md.ResourceMetrics()
-		for i := 0; i < rms.Len(); i++ {
-			rm := rms.At(i)
-			resourceAttrs := rm.Resource().Attributes()
-			sms := rm.ScopeMetrics()
-			for j := 0; j < sms.Len(); j++ {
-				sm := sms.At(j)
-				ms := sm.Metrics()
-				for k := 0; k < ms.Len(); k++ {
-					m := ms.At(k)
-					p.enrichMetric(resourceAttrs, m)
+		ctx = p.enrichBatch(ctx, signalMetrics, md.DataPointCount(), func(ctx context.Context) {
+			rms := md.ResourceMetrics()
+			for i := 0; i < rms.Len(); i++ {
+				rm := rms.At(i)
+				resourceAttrs := rm.Resource().Attributes()
+				sms := rm.ScopeMetrics()
+				for j := 0; j < sms.Len(); j++ {
+					sm := sms.At(j)
+					ms := sm.Metrics()
+					for k := 0; k < ms.Len(); k++ {
+						m := ms.At(k)
+						p.enrichMetric(ctx, resourceAttrs, m)
+					}
 				}
 			}
-		}
+		})
 	}
 	if p.metricsNext != nil {
 		return p.metricsNext.ConsumeMetrics(ctx, md)
@@ -186,35 +212,69 @@ func (p *gatewayAPIProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Met
 	return nil
 }
 
+// enrichBatch wraps a single ConsumeX call with a self-telemetry span and
+// enrichment_duration histogram observation. It returns the span-scoped ctx so
+// the inner enrichment calls inherit the span parentage.
+//
+// Spec §3.3 "No self-enrichment loop": we stamp `gatewayapiprocessor.self=true`
+// on the span so a downstream pipeline that fans spans back in can filter
+// them out with a single attribute predicate.
+func (p *gatewayAPIProcessor) enrichBatch(ctx context.Context, signal signalKind, items int, body func(context.Context)) context.Context {
+	signalStr := signalString(signal)
+	start := time.Now()
+	ctx, span := p.tel.startEnrichBatchSpan(ctx, signalStr, items)
+	defer func() {
+		elapsed := time.Since(start).Seconds()
+		span.End()
+		p.tel.recordEnrichmentDuration(ctx, signalStr, elapsed)
+	}()
+	body(ctx)
+	return ctx
+}
+
+// signalString maps signalKind → the closed-set label value used on metrics
+// and spans. Kept in lockstep with the signal* constants in telemetry.go.
+func signalString(s signalKind) string {
+	switch s {
+	case signalTraces:
+		return signalTracesStr
+	case signalLogs:
+		return signalLogsStr
+	case signalMetrics:
+		return signalMetricsStr
+	}
+	return "unknown"
+}
+
 // enrichMetric applies enrichment to every data point of the metric, because
 // metric-level attributes live on data points (not on the Metric struct).
-func (p *gatewayAPIProcessor) enrichMetric(resourceAttrs pcommon.Map, m pmetric.Metric) {
+func (p *gatewayAPIProcessor) enrichMetric(ctx context.Context, resourceAttrs pcommon.Map, m pmetric.Metric) {
 	//exhaustive:enforce
 	switch m.Type() {
 	case pmetric.MetricTypeGauge:
 		dps := m.Gauge().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
-			p.enrich(resourceAttrs, dps.At(i).Attributes(), signalMetrics)
+			p.enrich(ctx, resourceAttrs, dps.At(i).Attributes(), signalMetrics)
 		}
 	case pmetric.MetricTypeSum:
 		dps := m.Sum().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
-			p.enrich(resourceAttrs, dps.At(i).Attributes(), signalMetrics)
+			p.enrich(ctx, resourceAttrs, dps.At(i).Attributes(), signalMetrics)
 		}
 	case pmetric.MetricTypeHistogram:
 		dps := m.Histogram().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
-			p.enrich(resourceAttrs, dps.At(i).Attributes(), signalMetrics)
+			p.enrich(ctx, resourceAttrs, dps.At(i).Attributes(), signalMetrics)
 		}
 	case pmetric.MetricTypeExponentialHistogram:
 		dps := m.ExponentialHistogram().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
-			p.enrich(resourceAttrs, dps.At(i).Attributes(), signalMetrics)
+			p.enrich(ctx, resourceAttrs, dps.At(i).Attributes(), signalMetrics)
 		}
 	case pmetric.MetricTypeSummary:
 		dps := m.Summary().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
-			p.enrich(resourceAttrs, dps.At(i).Attributes(), signalMetrics)
+			p.enrich(ctx, resourceAttrs, dps.At(i).Attributes(), signalMetrics)
 		}
 	}
 }
@@ -238,7 +298,8 @@ const (
 //  5. If backendref_fallback is enabled and no parser matched, try the
 //     server.address → HTTPRoute index.
 //  6. For signalMetrics, strip exclude_from_metric_attributes keys.
-func (p *gatewayAPIProcessor) enrich(resourceAttrs, recordAttrs pcommon.Map, signal signalKind) {
+func (p *gatewayAPIProcessor) enrich(ctx context.Context, resourceAttrs, recordAttrs pcommon.Map, signal signalKind) {
+	signalStr := signalString(signal)
 	view := combinedView{record: recordAttrs, resource: resourceAttrs}
 
 	var matched parser.Result
@@ -254,8 +315,10 @@ func (p *gatewayAPIProcessor) enrich(resourceAttrs, recordAttrs pcommon.Map, sig
 
 	if !any {
 		if p.cfg.BackendRefFallba.Enabled {
-			p.applyBackendRefFallback(view, recordAttrs, signal)
+			p.applyBackendRefFallback(ctx, view, recordAttrs, signal)
+			return
 		}
+		p.tel.recordEnrichment(ctx, signalStr, outcomeDropped)
 		return
 	}
 
@@ -273,12 +336,14 @@ func (p *gatewayAPIProcessor) enrich(resourceAttrs, recordAttrs pcommon.Map, sig
 	// Passthrough doesn't carry (namespace, name) — stop here.
 	if matched.Namespace == "" || matched.Name == "" {
 		p.maybeStripMetrics(recordAttrs, signal)
+		p.tel.recordEnrichment(ctx, signalStr, outcomeStamped)
 		return
 	}
 
 	p.stampRouteIdentity(recordAttrs, matched)
-	p.stampCRMetadata(recordAttrs, matched)
+	p.stampCRMetadata(ctx, recordAttrs, matched)
 	p.maybeStripMetrics(recordAttrs, signal)
+	p.tel.recordEnrichment(ctx, signalStr, outcomeStamped)
 }
 
 // stampRouteIdentity writes attributes that come straight from the parser
@@ -303,7 +368,7 @@ func (p *gatewayAPIProcessor) stampRouteIdentity(attrs pcommon.Map, r parser.Res
 // stampCRMetadata enriches with gateway/gatewayclass fields read from the
 // informer cache. Absent informers (static lookup, cache miss) → no-op; the
 // record still carries the parser-derived route identity.
-func (p *gatewayAPIProcessor) stampCRMetadata(attrs pcommon.Map, r parser.Result) {
+func (p *gatewayAPIProcessor) stampCRMetadata(ctx context.Context, attrs pcommon.Map, r parser.Result) {
 	kind := RouteKindHTTPRoute
 	if r.Kind == "GRPCRoute" {
 		kind = RouteKindGRPCRoute
@@ -312,12 +377,12 @@ func (p *gatewayAPIProcessor) stampCRMetadata(attrs pcommon.Map, r parser.Result
 	if !ok {
 		return
 	}
-	p.stampRouteAttrs(attrs, ra)
+	p.stampRouteAttrs(ctx, attrs, ra)
 }
 
 // stampRouteAttrs writes all enrichment fields from a RouteAttributes.
 // Shared by direct-parse path and backendref_fallback path.
-func (p *gatewayAPIProcessor) stampRouteAttrs(attrs pcommon.Map, ra RouteAttributes) {
+func (p *gatewayAPIProcessor) stampRouteAttrs(ctx context.Context, attrs pcommon.Map, ra RouteAttributes) {
 	if ra.UID != "" {
 		if ra.Kind == RouteKindGRPCRoute {
 			// UID is stamped under HTTPRoute key in the schema; gRPC routes keep
@@ -330,11 +395,17 @@ func (p *gatewayAPIProcessor) stampRouteAttrs(attrs pcommon.Map, ra RouteAttribu
 		putString(attrs, AttrHTTPRouteParentRef, ra.ParentRef)
 	}
 	if p.cfg.EmitStatusConds && ra.Kind != RouteKindGRPCRoute {
+		stamped := false
 		if ra.Accepted != nil {
 			attrs.PutBool(AttrHTTPRouteAccepted, *ra.Accepted)
+			stamped = true
 		}
 		if ra.ResolvedRefs != nil {
 			attrs.PutBool(AttrHTTPRouteResolvedRefs, *ra.ResolvedRefs)
+			stamped = true
+		}
+		if stamped {
+			p.tel.recordStatusCondStamped(ctx)
 		}
 	}
 	if ra.GatewayName != "" {
@@ -359,21 +430,42 @@ func (p *gatewayAPIProcessor) stampRouteAttrs(attrs pcommon.Map, ra RouteAttribu
 
 // applyBackendRefFallback tries to resolve a route via the server.address →
 // HTTPRoute index when no parser matched.
-func (p *gatewayAPIProcessor) applyBackendRefFallback(view combinedView, recordAttrs pcommon.Map, signal signalKind) {
+func (p *gatewayAPIProcessor) applyBackendRefFallback(ctx context.Context, view combinedView, recordAttrs pcommon.Map, signal signalKind) {
+	signalStr := signalString(signal)
 	key := p.cfg.BackendRefFallba.SourceAttribute
 	if key == "" {
+		p.tel.recordBackendRefFallback(ctx, outcomeUnresolved)
+		p.tel.recordEnrichment(ctx, signalStr, outcomeDropped)
 		return
 	}
 	addr, ok := view.Get(key)
 	if !ok || addr == "" {
+		p.tel.recordBackendRefFallback(ctx, outcomeUnresolved)
+		p.tel.recordEnrichment(ctx, signalStr, outcomeDropped)
 		return
 	}
 	ns, svc := splitAddress(addr)
 	if ns == "" || svc == "" {
+		p.tel.recordBackendRefFallback(ctx, outcomeUnresolved)
+		p.tel.recordEnrichment(ctx, signalStr, outcomeDropped)
 		return
 	}
 	ra, ok := p.lookup.LookupByBackendService(ns, svc)
 	if !ok {
+		// A miss is either "no owner" or "index dropped it because multiple
+		// routes claimed the same Service". The informer-backed index exposes
+		// IsAmbiguousBackend to tell the two apart; the static test lookup
+		// does not implement it and falls through to "unresolved".
+		outcome := outcomeUnresolved
+		enrichOutcome := outcomeDropped
+		if c, ok2 := p.lookup.(interface {
+			IsAmbiguousBackend(ns, svc string) bool
+		}); ok2 && c.IsAmbiguousBackend(ns, svc) {
+			outcome = outcomeAmbiguous
+			enrichOutcome = outcomeAmbiguousOwner
+		}
+		p.tel.recordBackendRefFallback(ctx, outcome)
+		p.tel.recordEnrichment(ctx, signalStr, enrichOutcome)
 		return
 	}
 	// Synthesize a parser result so we can share the stamping path.
@@ -387,9 +479,11 @@ func (p *gatewayAPIProcessor) applyBackendRefFallback(view combinedView, recordA
 		ParserName: "backendref_fallback",
 	}
 	p.stampRouteIdentity(recordAttrs, pr)
-	p.stampRouteAttrs(recordAttrs, ra)
+	p.stampRouteAttrs(ctx, recordAttrs, ra)
 	putString(recordAttrs, AttrParser, pr.ParserName)
 	p.maybeStripMetrics(recordAttrs, signal)
+	p.tel.recordBackendRefFallback(ctx, outcomeResolved)
+	p.tel.recordEnrichment(ctx, signalStr, outcomeStamped)
 }
 
 // maybeStripMetrics removes cardinality-sensitive attributes on metrics only.

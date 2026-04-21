@@ -135,6 +135,6 @@ func attachDefaultStartHook(p *gatewayAPIProcessor) {
 		return
 	}
 	p.startHook = func(ctx context.Context) (RouteLookup, func(context.Context) error, error) {
-		return newInformers(ctx, p.logger, p.cfg)
+		return newInformers(ctx, p.logger, p.cfg, p.tel)
 	}
 }

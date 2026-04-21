@@ -47,6 +47,72 @@ make clean
 
 See [gatewayapiprocessor/README.md](./gatewayapiprocessor/README.md) for the full attribute schema and config reference.
 
+## Self-telemetry
+
+The processor emits its own spans, metrics, and logs off the Collector's
+`service.telemetry` stanza — no separate knob, no separate exporter. When
+`service.telemetry.metrics.level=none` (or the Tracer/Meter provider is
+absent) the instruments compile to no-ops, so running with telemetry
+disabled costs nothing. See [ISI-688](https://paperclip.isitobservable.com/ISI/issues/ISI-688) for the rollout motivation.
+
+### Enabling
+
+Nothing to flip on the processor. In the Collector config:
+
+```yaml
+service:
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed   # or "basic" for just counters
+      address: 0.0.0.0:8888
+    traces:
+      level: detailed
+```
+
+All gatewayapiprocessor self-metrics surface under the OTel scope
+`github.com/henrikrexed/gatewayapiprocessor/gatewayapiprocessor`.
+
+### Metrics
+
+| Name | Type | Labels | Purpose |
+|---|---|---|---|
+| `gatewayapiprocessor_routes_indexed` | UpDownCounter | `gateway_class`, `route_kind` | Size of each in-memory route index — tracks CRD population over time. |
+| `gatewayapiprocessor_enrichments_total` | Counter | `signal` (`metrics|traces|logs`), `outcome` (`stamped|dropped|ambiguous_owner`) | Per-record enrichment outcomes. |
+| `gatewayapiprocessor_informer_events_total` | Counter | `resource` (`HTTPRoute|GRPCRoute|Gateway|GatewayClass`), `event` (`add|update|delete|sync`) | Kubernetes informer volume. |
+| `gatewayapiprocessor_enrichment_duration` | Histogram (seconds) | `signal` | Per-batch enrichment latency. |
+| `gatewayapiprocessor_backend_ref_fallback_total` | Counter | `outcome` (`resolved|ambiguous|unresolved`) | Fallback-path attribution outcomes when no parser matches. |
+| `gatewayapiprocessor_status_conditions_stamped_total` | Counter | — | Records whose `Accepted`/`ResolvedRefs` conditions were stamped. Gated by `emit_status_conditions=true`. |
+
+No UID, route name, or pod identity appears in any label set — cardinality is
+bounded by `gateway_class × route_kind × signal × outcome` even at very large
+cluster scale.
+
+### Spans
+
+- `gatewayapiprocessor.EnrichBatch` (`SpanKind=Internal`) — one per
+  `ConsumeTraces/Logs/Metrics` call. Attributes: `signal`, `items`,
+  `gatewayapiprocessor.self=true`.
+
+The `gatewayapiprocessor.self=true` attribute is a guard against self-
+enrichment: if the Collector's own telemetry pipeline re-enters the processor,
+filter those spans out with a simple attribute predicate rather than parsing
+scope names.
+
+### Logs
+
+Emitted via the Collector-supplied logger:
+
+- **INFO** on startup — feature matrix (`enrich.traces/logs/metrics`,
+  `emit_status_conditions`, `backend_ref_fallback.enabled`, parser count).
+- **INFO** per informer-sync completion (`HTTPRoute`, `GRPCRoute`, `Gateway`,
+  `GatewayClass`).
+- **WARN** on ambiguous backendRef ownership (sampled, not per-event).
+- **ERROR** on informer start or sync failures.
+- **DEBUG** behind the existing debug path for per-request enrichment traces.
+
+
 ## Custom collector image
 
 Built via OCB ([builder-config.yaml](./builder-config.yaml)) and published to GHCR:
