@@ -159,6 +159,11 @@ func (r *routeIndex) deleteGRPCRoute(ns, name string) {
 //
 // We never encode the route name / UID in the labels — only (gateway_class,
 // route_kind). See processor-spec §1.4 cardinality guard.
+//
+// Context: the callers are informer event handlers (client-go cache callbacks)
+// which have no inbound request context, so we pass context.Background(). This
+// is an UpDownCounter of cluster state — it has no parent span to link to,
+// and sampling/exemplars are not meaningful for it.
 func (r *routeIndex) updateIndexedLabelLocked(key, routeKind, gatewayClass string, existed bool) {
 	if r.tel == nil {
 		return
@@ -180,6 +185,10 @@ func (r *routeIndex) updateIndexedLabelLocked(key, routeKind, gatewayClass strin
 
 // removeIndexedLabelLocked emits -1 on the key's last known labels and drops
 // the mapping. Caller must hold the write lock.
+//
+// context.Background() is intentional for the same reason as
+// updateIndexedLabelLocked — this is a cluster-state UpDownCounter emitted
+// from an informer callback that has no inbound request context.
 func (r *routeIndex) removeIndexedLabelLocked(key string) {
 	if r.tel == nil {
 		return

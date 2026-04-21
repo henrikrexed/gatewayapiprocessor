@@ -3,6 +3,7 @@ package gatewayapiprocessor
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/collector/component"
@@ -16,6 +17,12 @@ import (
 
 	"github.com/henrikrexed/gatewayapiprocessor/gatewayapiprocessor/parser"
 )
+
+// ambiguousBackendWarnInterval caps the rate of ambiguous-backendRef WARN logs
+// so a hot pipeline cannot spam the operator. One log per 30 s is enough to
+// surface the signal without flooding; the metric counter still records every
+// event.
+const ambiguousBackendWarnInterval = 30 * time.Second
 
 // gatewayAPIProcessor is the runtime for all three signal types.
 // A single instance is shared across traces/logs/metrics so the informer
@@ -34,10 +41,28 @@ type gatewayAPIProcessor struct {
 
 	lookup RouteLookup
 
+	// ambiguousBackendLastWarnNs is the unix-nanos timestamp of the last
+	// ambiguous-backendRef WARN we emitted. Accessed atomically. See
+	// ambiguousBackendWarnInterval for the sampling contract.
+	ambiguousBackendLastWarnNs atomic.Int64
+
 	// startHook is called during Start to warm informers. Tests override it with
 	// a no-op; production binds it to newInformers(...).
 	startHook func(ctx context.Context) (RouteLookup, func(context.Context) error, error)
 	stopFn    func(context.Context) error
+}
+
+// shouldWarnAmbiguousBackend returns true at most once per
+// ambiguousBackendWarnInterval across the whole processor, regardless of
+// (ns, svc). A single global token is enough — the accompanying metric counter
+// carries the precise per-outcome volume.
+func (p *gatewayAPIProcessor) shouldWarnAmbiguousBackend(now time.Time) bool {
+	nowNs := now.UnixNano()
+	last := p.ambiguousBackendLastWarnNs.Load()
+	if nowNs-last < int64(ambiguousBackendWarnInterval) {
+		return false
+	}
+	return p.ambiguousBackendLastWarnNs.CompareAndSwap(last, nowNs)
 }
 
 func newProcessor(set processor.Settings, cfg *Config) (*gatewayAPIProcessor, error) {
@@ -224,9 +249,11 @@ func (p *gatewayAPIProcessor) enrichBatch(ctx context.Context, signal signalKind
 	start := time.Now()
 	ctx, span := p.tel.startEnrichBatchSpan(ctx, signalStr, items)
 	defer func() {
+		// Record the duration before ending the span so exemplars attached to
+		// the histogram observation can link back to this batch span's context.
 		elapsed := time.Since(start).Seconds()
-		span.End()
 		p.tel.recordEnrichmentDuration(ctx, signalStr, elapsed)
+		span.End()
 	}()
 	body(ctx)
 	return ctx
@@ -383,13 +410,10 @@ func (p *gatewayAPIProcessor) stampCRMetadata(ctx context.Context, attrs pcommon
 // stampRouteAttrs writes all enrichment fields from a RouteAttributes.
 // Shared by direct-parse path and backendref_fallback path.
 func (p *gatewayAPIProcessor) stampRouteAttrs(ctx context.Context, attrs pcommon.Map, ra RouteAttributes) {
-	if ra.UID != "" {
-		if ra.Kind == RouteKindGRPCRoute {
-			// UID is stamped under HTTPRoute key in the schema; gRPC routes keep
-			// only name/namespace per processor-spec §1.2 table row 9-10.
-		} else {
-			putString(attrs, AttrHTTPRouteUID, ra.UID)
-		}
+	// UID is stamped under the HTTPRoute key only; gRPC routes keep just
+	// name/namespace per processor-spec §1.2 table row 9-10.
+	if ra.UID != "" && ra.Kind != RouteKindGRPCRoute {
+		putString(attrs, AttrHTTPRouteUID, ra.UID)
 	}
 	if ra.ParentRef != "" && ra.Kind != RouteKindGRPCRoute {
 		putString(attrs, AttrHTTPRouteParentRef, ra.ParentRef)
@@ -463,6 +487,15 @@ func (p *gatewayAPIProcessor) applyBackendRefFallback(ctx context.Context, view 
 		}); ok2 && c.IsAmbiguousBackend(ns, svc) {
 			outcome = outcomeAmbiguous
 			enrichOutcome = outcomeAmbiguousOwner
+			if p.shouldWarnAmbiguousBackend(time.Now()) {
+				p.logger.Warn("gatewayapiprocessor: ambiguous backendRef ownership (sampled)",
+					zap.String("namespace", ns),
+					zap.String("service", svc),
+					zap.String("source_attribute", key),
+					zap.String("signal", signalStr),
+					zap.Duration("sample_interval", ambiguousBackendWarnInterval),
+				)
+			}
 		}
 		p.tel.recordBackendRefFallback(ctx, outcome)
 		p.tel.recordEnrichment(ctx, signalStr, enrichOutcome)
