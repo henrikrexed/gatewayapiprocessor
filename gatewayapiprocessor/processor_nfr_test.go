@@ -33,7 +33,7 @@ const (
 	nfr1RouteCacheSize    = 10_000
 	nfr1LatencySamples    = 5_000
 	nfr1LatencyBudget     = 100 * time.Microsecond
-	nfr1ThroughputBudget  = 9_500   // records/sec, 5% regression budget off 10k
+	nfr1ThroughputBudget  = 9_500 // records/sec, 5% regression budget off 10k
 	nfr1ThroughputSeconds = 1
 	nfr1ThroughputBatch   = 100
 	nfr1WarmupIterations  = 500
