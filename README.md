@@ -108,9 +108,13 @@ Emitted via the Collector-supplied logger:
   `emit_status_conditions`, `backend_ref_fallback.enabled`, parser count).
 - **INFO** per informer-sync completion (`HTTPRoute`, `GRPCRoute`, `Gateway`,
   `GatewayClass`).
-- **WARN** on ambiguous backendRef ownership (sampled, not per-event).
+- **WARN** on ambiguous backendRef ownership — sampled at one log per 30 s
+  across the whole processor; the accompanying
+  `gatewayapiprocessor_backend_ref_fallback_total{outcome="ambiguous"}` counter
+  still records every event.
 - **ERROR** on informer start or sync failures.
-- **DEBUG** behind the existing debug path for per-request enrichment traces.
+- **DEBUG** on informer tombstone-type mismatches (`HTTPRoute`/`GRPCRoute`
+  delete paths).
 
 
 ## Custom collector image

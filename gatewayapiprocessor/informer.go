@@ -130,6 +130,15 @@ func defaultSyncTimeout(v time.Duration) time.Duration {
 }
 
 // --- event handlers ---
+//
+// Informer event handlers emit `gatewayapiprocessor_informer_events_total`
+// counters with `context.Background()`. That is intentional: client-go cache
+// callbacks are triggered by watch deltas and have no inbound request context,
+// so there is no parent span to link to. These counters are cluster-state
+// signals — their value is aggregated over (resource, event), and no
+// per-callback exemplar would be meaningful. If we ever wire OTel baggage
+// through the informer factory, the callsites below are the single place to
+// upgrade.
 
 func registerHTTPRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, gwStore *gatewayStore, gcStore *gatewayClassStore, cfg *Config, logger *zap.Logger, tel *telemetryBuilder) {
 	_, _ = inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
