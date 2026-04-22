@@ -226,7 +226,7 @@ func TestBackendRefFallback(t *testing.T) {
 	})
 
 	tp := newTestProcessors(t, lookup, func(c *Config) {
-		c.BackendRefFallba = BackendRefFallback{Enabled: true, SourceAttribute: "server.address"}
+		c.BackendRefFallback = BackendRefFallback{Enabled: true, SourceAttribute: "server.address"}
 	})
 
 	require.NoError(t, tp.traces.ConsumeTraces(context.Background(),

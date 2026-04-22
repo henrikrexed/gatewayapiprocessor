@@ -253,7 +253,7 @@ func (p *gatewayAPIProcessor) enrich(resourceAttrs, recordAttrs pcommon.Map, sig
 	}
 
 	if !any {
-		if p.cfg.BackendRefFallba.Enabled {
+		if p.cfg.BackendRefFallback.Enabled {
 			p.applyBackendRefFallback(view, recordAttrs, signal)
 		}
 		return
@@ -360,7 +360,7 @@ func (p *gatewayAPIProcessor) stampRouteAttrs(attrs pcommon.Map, ra RouteAttribu
 // applyBackendRefFallback tries to resolve a route via the server.address →
 // HTTPRoute index when no parser matched.
 func (p *gatewayAPIProcessor) applyBackendRefFallback(view combinedView, recordAttrs pcommon.Map, signal signalKind) {
-	key := p.cfg.BackendRefFallba.SourceAttribute
+	key := p.cfg.BackendRefFallback.SourceAttribute
 	if key == "" {
 		return
 	}

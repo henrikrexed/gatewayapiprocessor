@@ -27,7 +27,7 @@ type Config struct {
 	Parsers          []ParserConfig     `mapstructure:"parsers"`
 	Enrich           EnrichConfig       `mapstructure:"enrich"`
 	EmitStatusConds  bool               `mapstructure:"emit_status_conditions"`
-	BackendRefFallba BackendRefFallback `mapstructure:"backendref_fallback"`
+	BackendRefFallback BackendRefFallback `mapstructure:"backendref_fallback"`
 
 	// InformerSyncTimeout bounds Start() waiting for informer caches to warm up.
 	// Default 30s per processor-spec §2.4.
