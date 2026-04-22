@@ -48,6 +48,9 @@ nav:
   - Example configurations: examples.md
   - Architecture: architecture.md
 
+exclude_docs: |
+  requirements.txt
+
 plugins:
   - search
   - git-revision-date-localized:
