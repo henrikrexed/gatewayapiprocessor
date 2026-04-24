@@ -4,6 +4,7 @@ OpenTelemetry Collector processor that enriches spans, logs, and metrics with **
 
 Demo artifact for **"The Legend of Config: Breath of the Cluster"** — ObsSummit North America 2026.
 
+- **Docs site:** [https://henrikrexed.github.io/gatewayapiprocessor/](https://henrikrexed.github.io/gatewayapiprocessor/)
 - **Talk parent:** [ISI-661](https://paperclip.isitobservable.com/ISI/issues/ISI-661)
 - **Processor spec:** [ISI-670#document-processor-spec](https://paperclip.isitobservable.com/ISI/issues/ISI-670#document-processor-spec)
 - **Provisioning task:** [ISI-676](https://paperclip.isitobservable.com/ISI/issues/ISI-676)
