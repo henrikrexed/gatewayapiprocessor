@@ -74,7 +74,7 @@ func createDefaultConfig() component.Config {
 			},
 		},
 		EmitStatusConds: true,
-		BackendRefFallba: BackendRefFallback{
+		BackendRefFallback: BackendRefFallback{
 			Enabled:         true,
 			SourceAttribute: "server.address",
 		},

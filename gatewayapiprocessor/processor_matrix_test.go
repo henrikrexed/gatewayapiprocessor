@@ -187,7 +187,7 @@ func TestBackendRefFallback_Disabled_NoStamp(t *testing.T) {
 	})
 
 	tp := newTestProcessors(t, lookup, func(c *Config) {
-		c.BackendRefFallba = BackendRefFallback{Enabled: false, SourceAttribute: "server.address"}
+		c.BackendRefFallback = BackendRefFallback{Enabled: false, SourceAttribute: "server.address"}
 	})
 
 	require.NoError(t, tp.traces.ConsumeTraces(context.Background(),
@@ -202,7 +202,7 @@ func TestBackendRefFallback_Disabled_NoStamp(t *testing.T) {
 // mis-attribute.
 func TestBackendRefFallback_UnknownAddress_NoStamp(t *testing.T) {
 	tp := newTestProcessors(t, newStaticLookup(), func(c *Config) {
-		c.BackendRefFallba = BackendRefFallback{Enabled: true, SourceAttribute: "server.address"}
+		c.BackendRefFallback = BackendRefFallback{Enabled: true, SourceAttribute: "server.address"}
 	})
 
 	require.NoError(t, tp.traces.ConsumeTraces(context.Background(),
@@ -227,7 +227,7 @@ func TestBackendRefFallback_AmbiguousOwner_NoStamp(t *testing.T) {
 	}, []backendRef{{Namespace: "demo", Name: "shared"}})
 
 	tp := newTestProcessors(t, idx, func(c *Config) {
-		c.BackendRefFallba = BackendRefFallback{Enabled: true, SourceAttribute: "server.address"}
+		c.BackendRefFallback = BackendRefFallback{Enabled: true, SourceAttribute: "server.address"}
 	})
 
 	require.NoError(t, tp.traces.ConsumeTraces(context.Background(),
