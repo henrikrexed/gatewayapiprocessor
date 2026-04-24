@@ -1,0 +1,8 @@
+# OTel Operator — pinned v0.124.0 (matches collector version in VERSIONS.md).
+# Operator manages OpenTelemetryCollector and Instrumentation CRs; we use it
+# so the demo collector deployment is reconciled as a CR instead of a raw
+# Deployment (makes the before/after `kubectl apply` beat cleaner on stage).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - https://github.com/open-telemetry/opentelemetry-operator/releases/download/v0.124.0/opentelemetry-operator.yaml

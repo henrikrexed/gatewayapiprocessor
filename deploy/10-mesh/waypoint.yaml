@@ -1,0 +1,32 @@
+# Ambient waypoint — the per-namespace L7 proxy that emits the route_name
+# spans/metrics the processor enriches.
+#
+# Namespace is `otel-demo` to match `demo-steps §C` (ISI-671).
+# The ambient dataplane mode + use-waypoint labels activate ambient + waypoint
+# interception for every workload in this namespace.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: otel-demo
+  labels:
+    istio.io/dataplane-mode: ambient
+    istio.io/use-waypoint: waypoint
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: waypoint
+  namespace: otel-demo
+  annotations:
+    # `service` scope so GAMMA service-as-parentRef routes attach cleanly.
+    istio.io/waypoint-for: service
+spec:
+  # Waypoint Gateway — NOT the external entrypoint. The ingress is handled by
+  # Kgateway (deploy/10-mesh/kgateway.yaml). This gateway exists so ambient
+  # routes traffic through a waypoint proxy that emits L7 telemetry.
+  gatewayClassName: istio-waypoint
+  listeners:
+    - name: mesh
+      port: 15008
+      protocol: HBONE

@@ -1,0 +1,31 @@
+# kind cluster for the ObsSummit NA 2026 demo.
+# Pinned in VERSIONS.md — bump triggers fallback re-record (ISI-671).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: gatewayapi-demo
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.32.0
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 8080
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 8443
+        protocol: TCP
+  - role: worker
+    image: kindest/node:v1.32.0
+  - role: worker
+    image: kindest/node:v1.32.0
+networking:
+  # Ambient needs the default CNI disabled or replaced depending on profile;
+  # we keep the default kindnet and let Istio ambient (ztunnel) layer on top.
+  disableDefaultCNI: false
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/16"

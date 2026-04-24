@@ -1,0 +1,33 @@
+# AuthorizationPolicy scoped to the `checkoutservice` workload — only
+# `frontend` + `cartservice` ServiceAccounts may call CheckoutService RPCs.
+# Anything else (a compromised pod, a test client, Kubernetes Job in another
+# namespace) gets a 403/RBAC deny from the waypoint proxy.
+#
+# Talk beat: drop this on the slide next to the GAMMA mesh route and the
+# processor-enriched trace. The trace carries `k8s.grpcroute.name=
+# checkoutservice-mesh` plus the deny reason, so misconfigured auth shows up
+# in the same Notebook as the misconfigured backendRef.
+#
+# Reference: istio.io/latest/docs/reference/config/security/authorization-policy/
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: checkoutservice-allow
+  namespace: otel-demo
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: checkoutservice
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/otel-demo/sa/frontend"
+              - "cluster.local/ns/otel-demo/sa/cartservice"
+      to:
+        - operation:
+            # CheckoutService RPCs only — belt-and-braces alongside the
+            # AuthorizationPolicy target.
+            paths:
+              - "/oteldemo.CheckoutService/*"

@@ -7,36 +7,28 @@ Demo artifact for **"The Legend of Config: Breath of the Cluster"** — ObsSummi
 - **Docs site:** [https://henrikrexed.github.io/gatewayapiprocessor/](https://henrikrexed.github.io/gatewayapiprocessor/)
 - **Talk parent:** [ISI-661](https://paperclip.isitobservable.com/ISI/issues/ISI-661)
 - **Processor spec:** [ISI-670#document-processor-spec](https://paperclip.isitobservable.com/ISI/issues/ISI-670#document-processor-spec)
-- **Provisioning task:** [ISI-676](https://paperclip.isitobservable.com/ISI/issues/ISI-676)
+- **Demo runbook:** [ISI-671#document-demo-steps](https://paperclip.isitobservable.com/ISI/issues/ISI-671#document-demo-steps)
 
 ## Why
 
 Envoy-family collectors hand you `route_name="httproute/default/api/rule/0/match/0"` as an opaque string. Linkerd hands you three separate labels. Neither surfaces HTTPRoute CR status (`Accepted`, `ResolvedRefs`). This processor stamps the **same normalized attributes on every signal** regardless of the underlying data plane, so you can join traces/logs/metrics on HTTPRoute identity and show Gateway API misconfigurations without a vendor-specific dashboard.
 
-## Quickstart
+## Demo layout
 
-Single `kubectl apply` target — matches the talk's hero demo.
+The demo is operated by hand against a homelab Kubernetes cluster — there is no `make demo` automation. The authoritative runbook lives on ISI-671 as `demo-steps` (§A preconditions, §B preflight, §C install order, §D prewarm, §E the live beat, §F fallback, §H teardown).
+
+`make steps` prints a short version of §C for quick recall. Every command runs against the homelab kubeconfig, with the single observability backend being **Dynatrace** (via OTLP-HTTP).
+
+### Quickstart (once the homelab cluster is up)
 
 ```bash
-# Clone and bring up the full pinned stack (kind + ambient + kgateway + OBI + OTel Demo + custom collector):
-git clone https://github.com/isi-observable/gatewayapiprocessor
-cd gatewayapiprocessor
-make demo
+# Print the install order:
+make steps
 
-# Verify the demo HTTPRoute is Accepted:
-kubectl wait --for=condition=Accepted=True httproute/api --timeout=120s
-
-# Break it (the live stage action):
-kubectl apply -f deploy/break-backendref.yaml
-
-# Open the Grafana dashboard — 503 spike labelled k8s.httproute.name=api,
-# with k8s.httproute.resolved_refs=false.
-
-# Fix it (on-screen reversion):
-kubectl apply -f deploy/fix-backendref.yaml
-
-# Tear down:
-make clean
+# After walking through §C, the live beats are:
+make break    # flip HTTPRoute backendRef to a non-existent Service
+# ...wait ~15–30s for ingest, show the Notebook...
+make fix      # revert
 ```
 
 ## Architecture (brief)
@@ -48,12 +40,29 @@ make clean
 
 See [gatewayapiprocessor/README.md](./gatewayapiprocessor/README.md) for the full attribute schema and config reference.
 
+## Gateway API + GAMMA (service mesh) surface
+
+The demo exercises the same `HTTPRoute` CRD in **two modes** against the same cluster, which is the load-bearing slide:
+
+| Mode | parentRef | File | What it shows |
+|---|---|---|---|
+| Ingress | `Gateway/ingress` (Kgateway) | `deploy/30-demo/otel-demo.yaml` | North-south traffic, the hero `make break` / `make fix` beat. |
+| Mesh (GAMMA) | `Service/cartservice` + `Service/checkoutservice` | `deploy/10-mesh/gamma-routes.yaml` | East-west traffic through the Istio ambient waypoint. |
+
+Mesh policies under `deploy/10-mesh/policies/`:
+
+- `traffic-split.yaml` — 90/10 weighted canary on `/api/cart` (ingress-bound HTTPRoute).
+- `peer-authentication.yaml` — namespace-level `STRICT` mTLS `PeerAuthentication`.
+- `authorization-policy.yaml` — principals-scoped `AuthorizationPolicy` on `checkoutservice`.
+
+The processor stamps the same normalized `k8s.httproute.*` attributes on both ingress and mesh traffic, so the Dynatrace Notebook can join the two views on one HTTPRoute identity.
+
 ## Custom collector image
 
 Built via OCB ([builder-config.yaml](./builder-config.yaml)) and published to GHCR:
 
 ```
-ghcr.io/isi-observable/otelcol-gatewayapi:2026-04-21
+ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21
 ```
 
 Multi-arch: `linux/amd64`, `linux/arm64`. Tag matches `VERSIONS.md` date.
@@ -176,11 +185,18 @@ All demo component versions are pinned in [`VERSIONS.md`](./VERSIONS.md). The `V
 
 ```
 gatewayapiprocessor/         Go module (the processor itself)
-deploy/                      kind-cluster manifests for make demo
-backends/                    Grafana dashboards, Dynatrace notebook
+deploy/
+  00-operators/              CRDs + OTel Operator + ambient ztunnel
+  10-mesh/                   waypoint + kgateway + GAMMA routes + policies
+  20-obi/                    OBI DaemonSet (eBPF HTTP telemetry)
+  30-demo/                   OTel Demo v2.2.0 + ingress HTTPRoute/GRPCRoute
+  40-collector/              custom collector CR + RBAC
+  break-backendref.yaml      hero demo beat (apply)
+  fix-backendref.yaml        hero demo beat (revert)
+backends/dynatrace/          Dynatrace OTLP target config + notebook.json
 .github/workflows/           CI (go test + lint), OCB image build, weekly revalidation
 builder-config.yaml          OCB manifest
-Makefile                     make demo / make clean / make test / make lint
+Makefile                     make steps / make break / make fix / make test / make lint
 VERSIONS.md                  pinned manifest (authoritative)
 ```
 

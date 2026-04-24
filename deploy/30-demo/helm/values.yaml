@@ -1,0 +1,19 @@
+# otel-demo helm values. OTel Demo v2.2.0 corresponds to chart 0.38.0.
+# Keep these values minimal so the chart still matches upstream pins.
+default:
+  replicas: 1
+  envOverrides:
+    - name: OTEL_EXPORTER_OTLP_ENDPOINT
+      value: "http://otelcol.otel-system.svc.cluster.local:4317"
+    - name: OTEL_EXPORTER_OTLP_PROTOCOL
+      value: "grpc"
+opentelemetry-collector:
+  # Demo ships its own collector; we disable it to force all traffic through
+  # our custom collector that runs the gatewayapiprocessor.
+  enabled: false
+grafana:
+  enabled: false       # Dynatrace-only backend per ISI-671 scope lock-in.
+prometheus:
+  enabled: false
+jaeger:
+  enabled: false

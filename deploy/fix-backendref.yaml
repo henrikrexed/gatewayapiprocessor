@@ -1,0 +1,42 @@
+# Reversion slide. `kubectl apply -f deploy/fix-backendref.yaml` restores the
+# HTTPRoute to the working backendRef. Keeps the demo idempotent and leaves
+# the cluster clean for the next rehearsal.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: api
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/part-of: otel-demo
+    demo.isitobservable.com/stage: fixed
+spec:
+  parentRefs:
+    - name: ingress
+      namespace: otel-demo
+  hostnames:
+    - api.demo.local
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/cart
+      backendRefs:
+        - name: cartservice
+          port: 8080
+          weight: 100
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/checkout
+      backendRefs:
+        - name: checkoutservice
+          port: 5050
+          weight: 100
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/product
+      backendRefs:
+        - name: productcatalogservice
+          port: 3550
+          weight: 100

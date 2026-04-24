@@ -1,0 +1,16 @@
+# Namespace-level strict mTLS.
+#
+# Ambient already enforces mTLS between ztunnel pods by default — this CR
+# makes the posture explicit so the talk has something to point at on the
+# slide. If any pod ever escapes the mesh (e.g. Pod disables the sidecar
+# label), traffic to it from mesh workloads fails closed.
+#
+# Reference: istio.io/latest/docs/reference/config/security/peer_authentication/
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: otel-demo
+spec:
+  mtls:
+    mode: STRICT
