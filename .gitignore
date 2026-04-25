@@ -14,3 +14,15 @@ _build/
 
 # Local env
 .env
+
+# Token-bearing secret manifests must NEVER be committed. The naming
+# convention is enforced here as a backstop — anyone preparing a
+# real Secret should use one of these filename patterns. See
+# deploy/k8s/dynatrace/README.md for the secret-materialization
+# runbook (commit only sealed-secrets, not raw Secret YAMLs).
+*WITH-TOKEN*
+*-with-token*
+*.secret.yaml
+deploy/k8s/dynatrace/secret-dt-otlp-ingest.yaml
+!deploy/k8s/dynatrace/secret-dt-otlp-ingest.example.yaml
+!deploy/k8s/dynatrace/sealedsecret-dt-otlp-ingest.template.yaml
