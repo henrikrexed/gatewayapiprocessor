@@ -1,0 +1,234 @@
+# Agent-tier OTel Collector — DaemonSet, one pod per node.
+#
+# Job: pick up local OTLP from app SDKs + container logs, enrich with
+# kubelet-local pod metadata (k8sattributes), stamp the cluster
+# identity (resource/cluster-id), and load-balance to the gateway tier
+# keyed on traceID so each trace's spans converge on a single gateway
+# replica (precondition for gateway-side tail sampling).
+#
+# What runs here vs. the gateway (ISI-754 invariants — DO NOT MOVE):
+#   * gatewayapiprocessor       → gateway only (one cluster-scoped
+#                                 Gateway/HTTPRoute informer cache,
+#                                 not one per node).
+#   * tail_sampling             → gateway only (needs full-trace view).
+#   * resourcedetectionprocessor→ NOT used (rule: VM/bare-metal only;
+#                                 this cluster is pure K8s).
+#   * memory_limiter            → MUST be first processor.
+#   * batch                     → MUST be last processor.
+#
+# Image, operator, and semconv versions track gatewayapiprocessor/VERSIONS.md
+# (OTel Operator v0.150.0, Collector v0.150.0, custom collector image
+# pinned at ghcr.io/isi-observable/otelcol-gatewayapi:2026-04-21).
+#
+# Sized for the workload pattern in obs-annex §C: ~30 RPS per node from
+# the OTel Demo + ambient/Kgateway data plane. Headroom is 2x; if a
+# node sustains > 60 RPS we widen the pool, not the pod.
+---
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otelcol-agent
+  namespace: otel-system
+  labels:
+    app.kubernetes.io/component: otel-agent
+    app.kubernetes.io/part-of: gatewayapiprocessor
+    isi.observable/cluster: clusterapi-isi-01
+spec:
+  mode: daemonset
+  serviceAccount: otelcol-agent
+  image: ghcr.io/isi-observable/otelcol-gatewayapi:2026-04-21
+  imagePullPolicy: IfNotPresent
+  hostNetwork: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  env:
+    - name: K8S_NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+    - name: K8S_POD_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.name
+    - name: K8S_POD_IP
+      valueFrom:
+        fieldRef:
+          fieldPath: status.podIP
+  # filelog needs read access to container log files on the host.
+  volumeMounts:
+    - name: varlogpods
+      mountPath: /var/log/pods
+      readOnly: true
+    - name: varlibdockercontainers
+      mountPath: /var/lib/docker/containers
+      readOnly: true
+  volumes:
+    - name: varlogpods
+      hostPath:
+        path: /var/log/pods
+    - name: varlibdockercontainers
+      hostPath:
+        path: /var/lib/docker/containers
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+      # Container stdout/stderr — symlinked under /var/log/pods.
+      filelog:
+        include:
+          - /var/log/pods/*/*/*.log
+        exclude:
+          # Don't tail our own logs (avoid feedback loop).
+          - /var/log/pods/otel-system_*/*/*.log
+        start_at: end
+        include_file_path: true
+        include_file_name: false
+        operators:
+          - type: container
+            id: container-parser
+
+    processors:
+      # MUST be first — protects against backend stalls causing OOM.
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+
+      # Node-local kubelet enrichment. No cross-node API calls.
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        # Only enrich pods on this node — cuts the pod cache size by N.
+        filter:
+          node_from_env_var: K8S_NODE_NAME
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.pod.start_time
+            - k8s.deployment.name
+            - k8s.daemonset.name
+            - k8s.statefulset.name
+            - k8s.replicaset.name
+            - k8s.node.name
+          labels:
+            - tag_name: app.kubernetes.io/name
+              key: app.kubernetes.io/name
+              from: pod
+            - tag_name: app.kubernetes.io/component
+              key: app.kubernetes.io/component
+              from: pod
+            - tag_name: app.kubernetes.io/part-of
+              key: app.kubernetes.io/part-of
+              from: pod
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.ip
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.uid
+          - sources:
+              - from: connection
+
+      # Cluster-identity stamp. MUST happen at the agent so any future
+      # direct-to-gateway path (debug exporter, canary route) still
+      # carries cluster attribution. Inlined here from
+      # deploy/k8s/collector/gateway/resource-cluster-id.snippet.yaml
+      # — change BOTH places together.
+      resource/cluster-id:
+        attributes:
+          - key: k8s.cluster.name
+            value: clusterapi-isi-01
+            action: upsert
+          - key: deployment.environment
+            value: lab
+            action: upsert
+          - key: isi.observable/managed-by
+            value: gatewayapiprocessor
+            action: upsert
+
+      # MUST be last.
+      batch:
+        send_batch_size: 1024
+        send_batch_max_size: 2048
+        timeout: 5s
+
+    exporters:
+      # Trace-ID load balancing → gateway pods. Without routing_key:
+      # traceID, spans of the same trace land on different gateway
+      # replicas and tail_sampling sees a fragmented decision window.
+      #
+      # The k8s resolver LIST/WATCHes endpoints of the gateway service
+      # in the gateway-collector namespace — RBAC for that read is in
+      # the agent's RoleBinding (rbac.yaml).
+      loadbalancing:
+        routing_key: traceID
+        protocol:
+          otlp:
+            tls:
+              insecure: true
+            timeout: 10s
+            sending_queue:
+              enabled: true
+              num_consumers: 4
+              queue_size: 1000
+            retry_on_failure:
+              enabled: true
+              initial_interval: 1s
+              max_interval: 10s
+              max_elapsed_time: 60s
+        resolver:
+          k8s:
+            service: otelcol-gateway-collector.gateway-collector
+
+      # Debug tap — off by default. Flip verbosity to detailed during
+      # rehearsal only.
+      debug:
+        verbosity: basic
+
+    service:
+      telemetry:
+        metrics:
+          level: detailed
+        logs:
+          level: info
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors:
+            - memory_limiter
+            - k8sattributes
+            - resource/cluster-id
+            - batch
+          exporters: [loadbalancing]
+        metrics:
+          receivers: [otlp]
+          processors:
+            - memory_limiter
+            - k8sattributes
+            - resource/cluster-id
+            - batch
+          # Metrics don't need trace-ID affinity, but routing through
+          # the gateway keeps DT-side egress consolidated and lets the
+          # gateway own all backend authentication.
+          exporters: [loadbalancing]
+        logs:
+          receivers: [otlp, filelog]
+          processors:
+            - memory_limiter
+            - k8sattributes
+            - resource/cluster-id
+            - batch
+          exporters: [loadbalancing]

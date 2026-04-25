@@ -1,0 +1,61 @@
+# Gateway-tier RBAC.
+#
+# Scope vs. agent tier:
+#
+#   * gatewayapiprocessor needs cluster-scoped LIST/WATCH on Gateway,
+#     HTTPRoute, GRPCRoute, GatewayClass — this single informer cache
+#     is the architectural reason gatewayapiprocessor runs at the
+#     gateway, not the agent (no N-node multiplication of API server load).
+#   * No k8sattributes here — enrichment happened at the agent.
+#   * Reads Secret/dt-otlp-ingest in its own namespace (envFrom on the
+#     CR), no cross-namespace Secret access.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otelcol-gateway
+  namespace: gateway-collector
+  labels:
+    app.kubernetes.io/component: otel-gateway
+    app.kubernetes.io/part-of: gatewayapiprocessor
+    isi.observable/cluster: clusterapi-isi-01
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otelcol-gateway
+  labels:
+    app.kubernetes.io/component: otel-gateway
+    app.kubernetes.io/part-of: gatewayapiprocessor
+rules:
+  # gatewayapiprocessor informers — Gateway API resources cluster-wide.
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources:
+      - gateways
+      - httproutes
+      - grpcroutes
+      - gatewayclasses
+    verbs: ["get", "list", "watch"]
+  # emit_status_conditions — status subresources.
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources:
+      - gateways/status
+      - httproutes/status
+      - grpcroutes/status
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otelcol-gateway
+  labels:
+    app.kubernetes.io/component: otel-gateway
+    app.kubernetes.io/part-of: gatewayapiprocessor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otelcol-gateway
+subjects:
+  - kind: ServiceAccount
+    name: otelcol-gateway
+    namespace: gateway-collector

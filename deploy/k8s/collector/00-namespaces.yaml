@@ -1,0 +1,35 @@
+# Namespaces for the split-topology OTel collector deployment on the
+# ClusterAPI cluster (clusterapi-isi-01).
+#
+# Two namespaces, one per collector tier:
+#
+#   otel-system        — agent-tier (DaemonSet). Per-node, talks only
+#                        to the gateway service. Holds NO Dynatrace
+#                        credential — all DT-bound traffic goes via the
+#                        gateway, so a leak from any node-local pod
+#                        cannot escalate to a token leak.
+#
+#   gateway-collector  — gateway-tier (Deployment, replicas: 2). Holds
+#                        the dt-otlp-ingest Secret (issued by ISI-755).
+#                        Already declared in deploy/k8s/dynatrace/00-namespace.yaml;
+#                        re-declared inline-comment style here for the
+#                        topology overview, but NOT re-applied — apply
+#                        the dynatrace bundle's namespace file first.
+#
+# Why two namespaces (not one): blast radius. A leaked agent
+# ServiceAccount token must NOT be able to read Secret/dt-otlp-ingest.
+# Per ISI-749 §6.3 / obs-annex §D the gateway namespace is the only
+# place the DT ingest token ever exists in cluster.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: otel-system
+  labels:
+    app.kubernetes.io/component: otel-agent
+    app.kubernetes.io/part-of: gatewayapiprocessor
+    isi.observable/cluster: clusterapi-isi-01
+    # Agents talk plain OTLP to the gateway service inside the cluster.
+    # Block accidental waypoint enrollment (would wrap agent egress in
+    # waypoint mTLS and break trace-ID load balancing).
+    istio.io/dataplane-mode: none
