@@ -193,6 +193,37 @@ spec:
           k8s:
             service: otelcol-gateway-collector.gateway-collector
 
+      # Service-keyed load balancing → gateway pods, for the logs pipeline
+      # only. filelog records have no trace context, so reusing the
+      # traceID-keyed exporter above hashes every record to the empty key
+      # and converges all log volume onto a single gateway replica
+      # (defeats horizontal scaling, skews gateway memory pressure).
+      #
+      # routing_key: service spreads logs by service.name across replicas
+      # while still using the same k8s resolver / gateway Service — no
+      # extra endpoint, no extra RBAC. Gateway-side processing of logs
+      # is currently service-stateless; revisit this routing key if any
+      # future gateway processor needs full per-service log assembly.
+      loadbalancing/logs:
+        routing_key: service
+        protocol:
+          otlp:
+            tls:
+              insecure: true
+            timeout: 10s
+            sending_queue:
+              enabled: true
+              num_consumers: 4
+              queue_size: 1000
+            retry_on_failure:
+              enabled: true
+              initial_interval: 1s
+              max_interval: 10s
+              max_elapsed_time: 60s
+        resolver:
+          k8s:
+            service: otelcol-gateway-collector.gateway-collector
+
       # Debug tap — off by default. Flip verbosity to detailed during
       # rehearsal only.
       debug:
@@ -231,4 +262,7 @@ spec:
             - k8sattributes
             - resource/cluster-id
             - batch
-          exporters: [loadbalancing]
+          # Service-keyed LB (NOT traceID) — filelog records carry no
+          # trace context; traceID hashing would converge all logs on a
+          # single gateway replica. See loadbalancing/logs above.
+          exporters: [loadbalancing/logs]

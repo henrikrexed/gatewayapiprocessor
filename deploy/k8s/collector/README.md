@@ -43,9 +43,19 @@ deploy/k8s/collector/
 - `k8sattributesprocessor` runs **only** at the agent. Never at the gateway.
 - `resourcedetectionprocessor` is **not** used. It targets VM/bare-metal — this
   cluster is pure K8s.
-- Agent → gateway transport is `loadbalancing` exporter with `routing_key: traceID`
-  via the `k8s` resolver against `otelcol-gateway-collector.gateway-collector`.
-  Without trace-ID affinity, gateway tail sampling sees fragmented decisions.
+- Agent → gateway transport uses **two `loadbalancing` exporter instances**, both
+  resolving the same gateway Service (`otelcol-gateway-collector.gateway-collector`)
+  via the `k8s` resolver, but **keyed differently per signal**:
+  - `loadbalancing` (`routing_key: traceID`) — used by the **traces** and
+    **metrics** pipelines. Trace-ID affinity is required so each trace's spans
+    converge on a single gateway replica (precondition for gateway-side tail
+    sampling).
+  - `loadbalancing/logs` (`routing_key: service`) — used by the **logs** pipeline
+    only. filelog records have no trace context; reusing the traceID-keyed
+    exporter would hash every record to the empty key and converge all log
+    volume onto a single gateway replica. Service-keyed routing spreads logs by
+    `service.name` while keeping the same Service / RBAC. Revisit this if any
+    future gateway processor needs full per-service log assembly.
 
 ## Image / version pin
 
