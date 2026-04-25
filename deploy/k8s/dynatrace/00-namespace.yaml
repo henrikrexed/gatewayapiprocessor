@@ -1,0 +1,19 @@
+# Dedicated namespace for the gateway-tier OTel Collector and its
+# Dynatrace OTLP credential. Per ISI-749 §6.3 / obs-annex §D, the DT
+# token lives **only** in this namespace — agents (DaemonSet) on worker
+# nodes export to the gateway, never directly to Dynatrace, so they
+# never need the credential.
+#
+# Token blast radius: a leak from a workload pod cannot reach this
+# Secret because RBAC + namespace isolation gate it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gateway-collector
+  labels:
+    app.kubernetes.io/component: otel-gateway
+    app.kubernetes.io/part-of: gatewayapiprocessor
+    isi.observable/cluster: clusterapi-isi-01
+    # Block accidental waypoint enrollment — the gateway collector must
+    # talk plain OTLP to Dynatrace, not be wrapped in waypoint mTLS.
+    istio.io/dataplane-mode: none

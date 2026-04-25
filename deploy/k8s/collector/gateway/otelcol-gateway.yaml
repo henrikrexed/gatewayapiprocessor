@@ -1,0 +1,238 @@
+# Gateway-tier OTel Collector — Deployment, replicas: 2.
+#
+# Job: terminate trace-ID-affinitized OTLP from agents, run the
+# Gateway-API enrichment (gatewayapiprocessor — single cluster-wide
+# informer cache lives here), normalize semconv with `transform`,
+# tail-sample, then export to Dynatrace (and optionally Tempo).
+#
+# Why two replicas, not one or three:
+#   * one = no failure tolerance; an OOM = ingest blackout.
+#   * two = HA + the smallest replica count where trace-ID affinity
+#     from the agent layer (loadbalancingexporter) actually distributes
+#     load across pods.
+#   * three = wasteful at this cluster size. Re-evaluate if sustained
+#     CPU on the gateway pods exceeds ~70% of limits.
+#
+# Pipeline invariants (ISI-754):
+#   * memory_limiter → FIRST.
+#   * batch          → LAST.
+#   * gatewayapiprocessor runs ONLY here, never at the agent.
+#   * resourcedetectionprocessor is NOT used (K8s-only cluster).
+#
+# Versions track gatewayapiprocessor/VERSIONS.md (OTel Operator v0.150.0,
+# Collector v0.150.0). Image pinned to ghcr.io/isi-observable/otelcol-gatewayapi:2026-04-21
+# per the same file.
+#
+# Dynatrace credential is read from Secret/dt-otlp-ingest (issued by
+# ISI-755) — endpoint + token are env-injected, never inlined.
+---
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otelcol-gateway
+  namespace: gateway-collector
+  labels:
+    app.kubernetes.io/component: otel-gateway
+    app.kubernetes.io/part-of: gatewayapiprocessor
+    isi.observable/cluster: clusterapi-isi-01
+spec:
+  mode: deployment
+  replicas: 2
+  serviceAccount: otelcol-gateway
+  image: ghcr.io/isi-observable/otelcol-gatewayapi:2026-04-21
+  imagePullPolicy: IfNotPresent
+  # Spread across nodes so a single-node failure doesn't take both pods.
+  podDisruptionBudget:
+    minAvailable: 1
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      protocol: TCP
+  # Best-effort spread; never block scheduling on it (single-node
+  # rebuilds during demo prep should keep ingest alive).
+  podAnnotations:
+    sidecar.istio.io/inject: "false"
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: otel-gateway
+          app.kubernetes.io/part-of: gatewayapiprocessor
+  env:
+    # Sourced from Secret/dt-otlp-ingest (ISI-755 bundle creates it).
+    # Keys: `endpoint`, `api-token`. The exporter snippet in this
+    # directory references DT_TENANT_URL / DT_TOKEN — keep names in
+    # sync with both the Secret and the snippet.
+    - name: DT_TENANT_URL
+      valueFrom:
+        secretKeyRef:
+          name: dt-otlp-ingest
+          key: endpoint
+    - name: DT_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: dt-otlp-ingest
+          key: api-token
+    # Tempo is optional — ISI-749 §6 keeps a Grafana/Tempo path open
+    # for backend-portability demos. If TEMPO_ENDPOINT is unset, the
+    # exporter is omitted from the pipeline below; flip it on by
+    # setting the env var via overlay.
+    - name: TEMPO_ENDPOINT
+      value: ""
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+            max_recv_msg_size_mib: 16
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      # MUST be first.
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+
+      # The reason the gateway tier exists. One cluster-scoped informer
+      # cache here, no per-node multiplication.
+      gatewayapiprocessor:
+        informers:
+          resync_period: 60s
+          sync_timeout: 30s
+        parsers:
+          envoy:
+            enabled: true
+          linkerd:
+            enabled: true
+          passthrough:
+            enabled: true
+        # Cardinality guard — drop UIDs from metrics path (they are
+        # high-cardinality and not actionable in metrics queries).
+        attribute_policy:
+          metrics:
+            exclude:
+              - "k8s.gateway.uid"
+              - "k8s.httproute.uid"
+              - "k8s.grpcroute.uid"
+              - "k8s.gatewayclass.uid"
+        emit_status_conditions: true
+
+      # semconv normalization. Map any ad-hoc names from the OTel Demo
+      # to the 1.40.0 baseline so downstream queries hit one schema.
+      transform:
+        error_mode: ignore
+        trace_statements:
+          - context: resource
+            statements:
+              # Normalize service.namespace (some demo charts emit
+              # `k8s.namespace.name` only).
+              - set(attributes["service.namespace"], attributes["k8s.namespace.name"]) where attributes["service.namespace"] == nil and attributes["k8s.namespace.name"] != nil
+        metric_statements:
+          - context: resource
+            statements:
+              - set(attributes["service.namespace"], attributes["k8s.namespace.name"]) where attributes["service.namespace"] == nil and attributes["k8s.namespace.name"] != nil
+        log_statements:
+          - context: resource
+            statements:
+              - set(attributes["service.namespace"], attributes["k8s.namespace.name"]) where attributes["service.namespace"] == nil and attributes["k8s.namespace.name"] != nil
+
+      # Tail sampling — kept inline so the CR is self-describing. Logic
+      # mirrors deploy/k8s/collector/gateway/tail-sampling.snippet.yaml;
+      # change BOTH places together.
+      tail_sampling:
+        decision_wait: 10s
+        num_traces: 100000
+        expected_new_traces_per_sec: 1000
+        policies:
+          - name: keep-errors
+            type: status_code
+            status_code:
+              status_codes: [ERROR]
+          - name: keep-latency-tail
+            type: latency
+            latency:
+              threshold_ms: 500
+          - name: keep-5pct-nominal
+            type: probabilistic
+            probabilistic:
+              sampling_percentage: 5
+
+      # MUST be last.
+      batch:
+        send_batch_size: 1024
+        send_batch_max_size: 2048
+        timeout: 5s
+
+    exporters:
+      # Dynatrace OTLP/HTTP — primary backend. Endpoint + token from
+      # Secret/dt-otlp-ingest via env. See
+      # deploy/k8s/collector/gateway/exporter-dynatrace.snippet.yaml
+      # for the rationale on otlphttp vs grpc and on compression.
+      otlphttp/dynatrace:
+        endpoint: ${env:DT_TENANT_URL}/api/v2/otlp
+        headers:
+          Authorization: "Api-Token ${env:DT_TOKEN}"
+        compression: gzip
+        sending_queue:
+          enabled: true
+          num_consumers: 4
+          queue_size: 1000
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+          max_elapsed_time: 300s
+        tls:
+          insecure: false
+
+      # Debug tap — verbosity stays at `basic` so we don't hot-loop
+      # the pipeline on detailed dumps. Flip during rehearsal only.
+      debug:
+        verbosity: basic
+
+    service:
+      telemetry:
+        metrics:
+          level: detailed
+        logs:
+          level: info
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors:
+            - memory_limiter
+            - gatewayapiprocessor
+            - transform
+            - tail_sampling
+            - batch
+          exporters: [otlphttp/dynatrace]
+        metrics:
+          receivers: [otlp]
+          processors:
+            - memory_limiter
+            - gatewayapiprocessor
+            - transform
+            - batch
+          exporters: [otlphttp/dynatrace]
+        logs:
+          receivers: [otlp]
+          processors:
+            - memory_limiter
+            - transform
+            - batch
+          exporters: [otlphttp/dynatrace]

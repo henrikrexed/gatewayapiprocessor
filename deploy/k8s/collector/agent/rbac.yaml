@@ -1,0 +1,92 @@
+# Agent-tier RBAC.
+#
+# Scope is intentionally minimal vs. the gateway tier:
+#
+#   * k8sattributesprocessor reads pods/namespaces/nodes (+ owner refs
+#     via apps/* kinds) — required, this is the whole reason the
+#     enrichment is at the agent.
+#   * loadbalancingexporter k8s resolver reads endpoints/services in
+#     the gateway-collector namespace to discover the gateway pods.
+#   * NO Gateway-API verbs here — gatewayapiprocessor runs ONLY at the
+#     gateway (ISI-754 invariant). A single cluster-scoped LIST/WATCH
+#     on Gateway/HTTPRoute is the whole point of the split.
+#   * NO read on Secret/dt-otlp-ingest — agents never see the DT token.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otelcol-agent
+  namespace: otel-system
+  labels:
+    app.kubernetes.io/component: otel-agent
+    app.kubernetes.io/part-of: gatewayapiprocessor
+    isi.observable/cluster: clusterapi-isi-01
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otelcol-agent
+  labels:
+    app.kubernetes.io/component: otel-agent
+    app.kubernetes.io/part-of: gatewayapiprocessor
+rules:
+  # k8sattributesprocessor — node-local pod metadata enrichment.
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets", "deployments", "daemonsets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  # filelogreceiver reads container log file metadata via the kubelet API.
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otelcol-agent
+  labels:
+    app.kubernetes.io/component: otel-agent
+    app.kubernetes.io/part-of: gatewayapiprocessor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otelcol-agent
+subjects:
+  - kind: ServiceAccount
+    name: otelcol-agent
+    namespace: otel-system
+---
+# loadbalancingexporter k8s resolver scope — namespaced to
+# gateway-collector. Endpoints LIST/WATCH only in that namespace,
+# nothing wider.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: otelcol-agent-gateway-resolver
+  namespace: gateway-collector
+  labels:
+    app.kubernetes.io/component: otel-agent
+    app.kubernetes.io/part-of: gatewayapiprocessor
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints", "services"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: otelcol-agent-gateway-resolver
+  namespace: gateway-collector
+  labels:
+    app.kubernetes.io/component: otel-agent
+    app.kubernetes.io/part-of: gatewayapiprocessor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: otelcol-agent-gateway-resolver
+subjects:
+  - kind: ServiceAccount
+    name: otelcol-agent
+    namespace: otel-system

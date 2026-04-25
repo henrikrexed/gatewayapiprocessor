@@ -1,0 +1,29 @@
+# Saved Filter Segment that scopes UI dashboards, notebooks, and SLOs
+# to clusterapi-isi-01 telemetry only. This is the Grail equivalent of
+# the legacy "Management Zone" view boundary — the bucket gives storage
+# scope, this segment gives UI/query scope, and the IAM policy gives
+# access scope. All three together satisfy ISI-749 §6.3 / obs-annex §D.
+#
+# Variables (`$cluster_name`) are template parameters — apply with:
+#   dtctl apply -f filter-segment-clusterapi-isi-01.yaml \
+#     --set cluster_name=clusterapi-isi-01
+#
+# Requires DT scope `settings:objects:write` on
+# `builtin:dt.segmentation.segments`. Confirm schema/field names with
+# `dtctl describe settings-schema builtin:dt.segmentation.segments` on
+# the target tenant — schemas evolve between releases.
+schemaId: builtin:dt.segmentation.segments
+scope: environment
+value:
+  name: "clusterapi-isi-01"
+  description: "Per-cluster scope for clusterapi-isi-01 (ISI-755 / obs-annex §D)"
+  variables: []
+  filterSegments:
+    - tableName: logs
+      filter: 'k8s.cluster.name == "clusterapi-isi-01"'
+    - tableName: spans
+      filter: 'k8s.cluster.name == "clusterapi-isi-01"'
+    - tableName: events
+      filter: 'k8s.cluster.name == "clusterapi-isi-01"'
+    - tableName: bizevents
+      filter: 'k8s.cluster.name == "clusterapi-isi-01"'
