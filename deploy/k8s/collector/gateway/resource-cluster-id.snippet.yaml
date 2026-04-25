@@ -1,0 +1,27 @@
+# Resource-attribute stamp — fragment for the AGENT-tier collector
+# (DaemonSet), not the gateway. Documented here so the gateway-side
+# bundle has the full picture; physically included into the agent
+# config when ISI-754 lands.
+#
+# Why this lives at the agent, not the gateway:
+#   - obs-annex §D, point 1: cluster identity must be stamped at the
+#     agent so any future direct-to-gateway path still carries it.
+#   - If we stamp at the gateway, a span that bypasses the gateway
+#     (e.g. a debug exporter the developer wires up locally) loses
+#     cluster-attribution and contaminates default_logs / default_spans.
+#
+# These three attributes are what `filter-segment-clusterapi-isi-01.yaml`
+# and `iam-policy-clusterapi-isi-01.yaml` filter on. If you change the
+# attribute names here you must also update those two files.
+processors:
+  resource/cluster-id:
+    attributes:
+      - key: k8s.cluster.name
+        value: clusterapi-isi-01
+        action: upsert
+      - key: deployment.environment
+        value: lab
+        action: upsert
+      - key: isi.observable/managed-by
+        value: gatewayapiprocessor
+        action: upsert

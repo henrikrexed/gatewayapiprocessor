@@ -1,0 +1,61 @@
+# Tail-sampling first-pass policy — fragment for the gateway-tier
+# OpenTelemetryCollector CR. Merge into the gateway collector's
+# `config:` block alongside exporter-dynatrace.snippet.yaml.
+#
+# Why tail-sampling at the gateway (not at the agent):
+#   - The decision needs the full trace to be assembled. Per-node
+#     agents only see one span at a time; only the gateway's two
+#     replicas (with a load-balancing exporter at the agent layer
+#     keyed on trace ID) can build a full-trace decision window.
+#   - OBI emits one span per L7 flow it observes — for a chatty
+#     workload, that explodes the per-cluster span volume. Tail
+#     sampling here is the line of defense against blowing the
+#     Dynatrace ingest budget.
+#
+# Policy stack (evaluated in order; first match wins):
+#   1. status_code/error  — keep all error traces, always
+#   2. latency tail (>P95) — keep slow traces (uses a 500ms threshold
+#      as a cheap heuristic; tune after first week with
+#      `optimize-cardinality` against real workload p95)
+#   3. probabilistic 5%   — sample the nominal long-tail
+#
+# Trace-ID load balancing at the agent (NOT in this file — belongs in
+# the agent DaemonSet snippet) is mandatory: without it, spans of the
+# same trace land on different gateway replicas and tail-sampling sees
+# fragmented decisions. Agent layer must use:
+#   exporters:
+#     loadbalancing:
+#       routing_key: traceID
+#       resolver:
+#         k8s:
+#           service: otelcol-gateway.gateway-collector.svc.cluster.local
+#
+processors:
+  tail_sampling:
+    decision_wait: 10s
+    num_traces: 100000
+    expected_new_traces_per_sec: 1000
+    policies:
+      - name: keep-errors
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+
+      - name: keep-latency-tail
+        type: latency
+        latency:
+          threshold_ms: 500
+
+      - name: keep-5pct-nominal
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 5
+
+      # Optional safety valve: keep 100% of traces from any service
+      # explicitly tagged for full sampling (e.g. canary deploys).
+      # Uncomment when the canary workflow lands in ISI-754.
+      # - name: keep-canary-full
+      #   type: string_attribute
+      #   string_attribute:
+      #     key: deployment.canary
+      #     values: ["true"]
