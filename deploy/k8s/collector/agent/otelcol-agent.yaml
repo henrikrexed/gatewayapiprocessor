@@ -37,7 +37,11 @@ spec:
   mode: daemonset
   serviceAccount: otelcol-agent
   image: ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21
-  imagePullPolicy: IfNotPresent
+  # Always pull: the date-stamped tag (`:YYYY-MM-DD`) is the source of truth
+  # and may be re-published in place when an OCB component fix lands. With
+  # `IfNotPresent`, kubelets keep the cached old digest and pods stay on the
+  # broken image even after `rollout restart` (see ISI-766 / ISI-769).
+  imagePullPolicy: Always
   hostNetwork: false
   resources:
     requests:
