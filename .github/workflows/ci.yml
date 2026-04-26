@@ -203,3 +203,49 @@ jobs:
           path: sbom.source.cyclonedx.json
           retention-days: 30
 
+  # ---------------------------------------------------------------------------
+  # Demo-asset validation (per ISI-671 demo-risk §6).
+  # CI does NOT run `make demo` — Henrik runs end-to-end in homelab. CI only
+  # validates the assets so the homelab demo stays green.
+  # ---------------------------------------------------------------------------
+  manifest-lint:
+    name: manifest-lint (yamllint + kubeconform)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install yamllint
+        run: pipx install yamllint
+
+      - name: yamllint deploy/
+        run: yamllint -c .yamllint.yml deploy/
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin kubeconform
+
+      - name: kubeconform deploy/ (k8s + Gateway API CRDs)
+        run: |
+          # Schema location for OSS Gateway API CRDs (and other CRDs surfacing
+          # in deploy/). Falls back to upstream k8s schemas for built-in kinds.
+          kubeconform \
+            -strict \
+            -summary \
+            -ignore-missing-schemas \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            $(find deploy/ -type f \( -name '*.yaml' -o -name '*.yml' \))
+
+  versions-check:
+    name: versions-check (deploy/ + builder-config + Makefile vs VERSIONS.md)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Run check-versions.sh
+        run: bin/check-versions.sh
+
