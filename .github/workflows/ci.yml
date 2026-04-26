@@ -228,15 +228,32 @@ jobs:
 
       - name: kubeconform deploy/ (k8s + Gateway API CRDs)
         run: |
-          # Schema location for OSS Gateway API CRDs (and other CRDs surfacing
-          # in deploy/). Falls back to upstream k8s schemas for built-in kinds.
+          # Validate full k8s manifests under deploy/ against k8s built-in
+          # schemas + datreeio CRD catalog (Gateway API, OTel Operator, etc.).
+          #
+          # Excluded by design:
+          #   *.snippet.yaml           — partial config fragments, not k8s objects
+          #   deploy/30-demo/helm/**   — Helm chart values, not k8s objects
+          #
+          # Skipped kinds:
+          #   OpenTelemetryCollector   — CRD allows `spec.config` as either
+          #                              string (legacy inline) or object;
+          #                              datreeio schema only accepts object.
+          #                              The operator validates at admission
+          #                              time, so we defer to it.
+          mapfile -t files < <(find deploy/ -type f \( -name '*.yaml' -o -name '*.yml' \) \
+            ! -name '*.snippet.yaml' \
+            ! -path 'deploy/30-demo/helm/*')
+          echo "Validating ${#files[@]} files:"
+          printf '  %s\n' "${files[@]}"
           kubeconform \
             -strict \
             -summary \
             -ignore-missing-schemas \
+            -skip OpenTelemetryCollector \
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-            $(find deploy/ -type f \( -name '*.yaml' -o -name '*.yml' \))
+            "${files[@]}"
 
   versions-check:
     name: versions-check (deploy/ + builder-config + Makefile vs VERSIONS.md)
