@@ -79,7 +79,7 @@ kubectl apply -f deploy/k8s/dynatrace/00-namespace.yaml
 #    Option B — direct kubectl create (no controller; one-time, by
 #    a human operator only — bash leading-space trick keeps the token
 #    out of shell history):
-#       export DT_TENANT_URL='https://oat05854.dev.dynatracelabs.com'
+#       export DT_TENANT_URL='https://<env-id>.live.dynatrace.com'
 #       read -rs DT_TOKEN   # paste token, press enter — does not echo
 #      kubectl -n gateway-collector create secret generic dt-otlp-ingest \
 #        --from-literal=endpoint="$DT_TENANT_URL" \
