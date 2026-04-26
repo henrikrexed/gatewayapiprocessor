@@ -110,7 +110,12 @@ spec:
 
       # The reason the gateway tier exists. One cluster-scoped informer
       # cache here, no per-node multiplication.
-      gatewayapiprocessor:
+      #
+      # The processor's registered Type is "gatewayapi" (per
+      # gatewayapiprocessor/factory.go: typeStr = "gatewayapi"). Do NOT
+      # rename to "gatewayapiprocessor" — that's the Go module path, not
+      # the OTel component type.
+      gatewayapi:
         informers:
           resync_period: 60s
           sync_timeout: 30s
@@ -216,7 +221,7 @@ spec:
           receivers: [otlp]
           processors:
             - memory_limiter
-            - gatewayapiprocessor
+            - gatewayapi
             - transform
             - tail_sampling
             - batch
@@ -225,7 +230,7 @@ spec:
           receivers: [otlp]
           processors:
             - memory_limiter
-            - gatewayapiprocessor
+            - gatewayapi
             - transform
             - batch
           exporters: [otlphttp/dynatrace]
