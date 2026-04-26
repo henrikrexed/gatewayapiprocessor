@@ -57,38 +57,56 @@ func (r *routeIndex) LookupByBackendService(ns, svc string) (RouteAttributes, bo
 // upsertHTTPRoute applies a full RouteAttributes + backendRef list from a
 // decoded HTTPRoute object. The informer event handlers build the struct and
 // call this; tests call it directly to simulate cache state.
+//
+// Update semantics: if the route previously claimed a backend that no longer
+// appears in backendRefs (route's spec changed), the stale claim is cleared
+// before re-indexing. Without this, a renamed backendRef would leave the old
+// service pointing at this route forever.
 func (r *routeIndex) upsertHTTPRoute(ra RouteAttributes, backendRefs []backendRef) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := routeKey(RouteKindHTTPRoute, ra.Namespace, ra.Name)
 	r.routes[key] = ra
-	owner := key
-	for _, b := range backendRefs {
-		bkey := b.Namespace + "/" + b.Name
-		if existing, ok := r.claimedBackends[bkey]; ok && existing != owner {
-			// Multiple routes reference this service — drop the index entry so
-			// backendref_fallback never attributes ambiguously.
-			delete(r.backendIndex, bkey)
-			continue
-		}
-		r.claimedBackends[bkey] = owner
-		r.backendIndex[bkey] = ra
-	}
+	r.reindexBackends(key, ra, backendRefs)
 }
 
 // upsertGRPCRoute mirrors upsertHTTPRoute for GRPCRoute CRs. Indexes by
 // backendRef so GAMMA mesh-mode gRPC spans (which carry server.address /
 // net.peer.name pointing at the backend Service) can resolve via the
-// backendref_fallback path.
+// backendref_fallback path. Update semantics match upsertHTTPRoute — see
+// that doc.
 func (r *routeIndex) upsertGRPCRoute(ra RouteAttributes, backendRefs []backendRef) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := routeKey(RouteKindGRPCRoute, ra.Namespace, ra.Name)
 	r.routes[key] = ra
-	owner := key
+	r.reindexBackends(key, ra, backendRefs)
+}
+
+// reindexBackends releases previously-owned backend keys that are no longer
+// in backendRefs, then re-claims the current set. Caller must hold r.mu.
+func (r *routeIndex) reindexBackends(owner string, ra RouteAttributes, backendRefs []backendRef) {
+	wanted := make(map[string]struct{}, len(backendRefs))
+	for _, b := range backendRefs {
+		wanted[b.Namespace+"/"+b.Name] = struct{}{}
+	}
+	// Drop stale claims belonging to this owner.
+	for bkey, claim := range r.claimedBackends {
+		if claim != owner {
+			continue
+		}
+		if _, keep := wanted[bkey]; keep {
+			continue
+		}
+		delete(r.claimedBackends, bkey)
+		delete(r.backendIndex, bkey)
+	}
+	// (Re)claim current backends.
 	for _, b := range backendRefs {
 		bkey := b.Namespace + "/" + b.Name
 		if existing, ok := r.claimedBackends[bkey]; ok && existing != owner {
+			// Multiple routes reference this service — drop the index entry so
+			// backendref_fallback never attributes ambiguously.
 			delete(r.backendIndex, bkey)
 			continue
 		}

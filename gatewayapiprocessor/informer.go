@@ -317,15 +317,25 @@ func statusFlags(parents []gwv1.RouteParentStatus) (*bool, *bool) {
 }
 
 func formatParentRef(pr gwv1.ParentReference, ownerNS string) string {
-	// Per Gateway API: nil Group → "gateway.networking.k8s.io", explicit
-	// empty string → core API group (used by GAMMA Service parents).
-	group := "gateway.networking.k8s.io"
-	if pr.Group != nil {
-		group = string(*pr.Group)
-	}
+	// Group resolution mirrors isServiceParent so the two are consistent:
+	//  - Kind=Service: ALWAYS core group (""), since Service is a core
+	//    Kubernetes resource. Honors both nil-Group and explicit-empty-Group
+	//    forms of GAMMA parents — both classify as mesh-mode upstream and
+	//    must format the same way here.
+	//  - Otherwise: nil Group defaults to "gateway.networking.k8s.io" per
+	//    Gateway API; explicit value (including "") wins.
 	kind := "Gateway"
 	if pr.Kind != nil && *pr.Kind != "" {
 		kind = string(*pr.Kind)
+	}
+	var group string
+	switch {
+	case kind == "Service":
+		group = ""
+	case pr.Group != nil:
+		group = string(*pr.Group)
+	default:
+		group = "gateway.networking.k8s.io"
 	}
 	ns := ownerNS
 	if pr.Namespace != nil && *pr.Namespace != "" {

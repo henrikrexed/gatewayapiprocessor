@@ -273,6 +273,63 @@ func TestBackendRefFallback_EffectiveSourceAttrs(t *testing.T) {
 	assert.Equal(t, []string{"server.address", "destination.address"}, b.effectiveSourceAttrs())
 }
 
+// formatParentRef must be consistent with isServiceParent: a parentRef with
+// Kind=Service and nil Group classifies as GAMMA (mesh) upstream, so the
+// parent_ref string must use the core API group ("") — NOT
+// "gateway.networking.k8s.io/Service/...". Regression guard for PR#37 review.
+func TestFormatParentRef_NilGroupServiceKind_UsesCoreGroup(t *testing.T) {
+	svcKind := gwv1.Kind("Service")
+	ref := gwv1.ParentReference{Kind: &svcKind, Name: "product-catalog"}
+	// Sanity: this is the same input isServiceParent classifies as mesh.
+	require.True(t, isServiceParent(ref))
+	assert.Equal(t,
+		"/Service/otel-demo/product-catalog",
+		formatParentRef(ref, "otel-demo"),
+		"nil Group + Kind=Service must format with core group, matching isServiceParent",
+	)
+
+	// Explicit-empty-Group form must produce the same string.
+	emptyGroup := gwv1.Group("")
+	ref2 := gwv1.ParentReference{Group: &emptyGroup, Kind: &svcKind, Name: "product-catalog"}
+	assert.Equal(t, formatParentRef(ref, "otel-demo"), formatParentRef(ref2, "otel-demo"))
+}
+
+// upsert{HTTP,GRPC}Route on Update must release backend keys the route no
+// longer claims, otherwise stale fallback attribution lingers when a route's
+// backendRefs change. Regression guard for PR#37 review.
+func TestRouteIndex_UpsertHTTPRoute_ReleasesStaleBackendsOnUpdate(t *testing.T) {
+	idx := newRouteIndex()
+	ra := RouteAttributes{Kind: RouteKindHTTPRoute, Name: "api", Namespace: "demo"}
+	idx.upsertHTTPRoute(ra, []backendRef{{Namespace: "demo", Name: "api-v1"}})
+	got, ok := idx.LookupByBackendService("demo", "api-v1")
+	require.True(t, ok)
+	assert.Equal(t, "api", got.Name)
+
+	// Route now points at a different backend Service.
+	idx.upsertHTTPRoute(ra, []backendRef{{Namespace: "demo", Name: "api-v2"}})
+
+	_, ok = idx.LookupByBackendService("demo", "api-v1")
+	assert.False(t, ok, "stale backend claim from prior upsert must be released")
+	got, ok = idx.LookupByBackendService("demo", "api-v2")
+	require.True(t, ok)
+	assert.Equal(t, "api", got.Name)
+}
+
+func TestRouteIndex_UpsertGRPCRoute_ReleasesStaleBackendsOnUpdate(t *testing.T) {
+	idx := newRouteIndex()
+	ra := RouteAttributes{Kind: RouteKindGRPCRoute, Name: "fe2pc", Namespace: "otel-demo"}
+	idx.upsertGRPCRoute(ra, []backendRef{{Namespace: "otel-demo", Name: "product-catalog"}})
+
+	// GAMMA parent Service swapped to a different Service.
+	idx.upsertGRPCRoute(ra, []backendRef{{Namespace: "otel-demo", Name: "ad-service"}})
+
+	_, ok := idx.LookupByBackendService("otel-demo", "product-catalog")
+	assert.False(t, ok, "stale GAMMA parent Service claim must be released on Update")
+	got, ok := idx.LookupByBackendService("otel-demo", "ad-service")
+	require.True(t, ok)
+	assert.Equal(t, "fe2pc", got.Name)
+}
+
 // Metric strip list must include k8s.grpcroute.uid — same cardinality risk
 // as the http variant.
 func TestMetricStrip_GRPCRouteUID(t *testing.T) {
