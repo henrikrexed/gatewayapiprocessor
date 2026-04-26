@@ -40,7 +40,11 @@ spec:
   replicas: 2
   serviceAccount: otelcol-gateway
   image: ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21
-  imagePullPolicy: IfNotPresent
+  # Always pull: the date-stamped tag (`:YYYY-MM-DD`) is the source of truth
+  # and may be re-published in place when an OCB component fix lands. With
+  # `IfNotPresent`, kubelets keep the cached old digest and pods stay on the
+  # broken image even after `rollout restart` (see ISI-766 / ISI-769).
+  imagePullPolicy: Always
   # Spread across nodes so a single-node failure doesn't take both pods.
   podDisruptionBudget:
     minAvailable: 1
@@ -110,26 +114,35 @@ spec:
 
       # The reason the gateway tier exists. One cluster-scoped informer
       # cache here, no per-node multiplication.
-      gatewayapiprocessor:
-        informers:
+      #
+      # The processor's registered Type is "gatewayapi" (per
+      # gatewayapiprocessor/factory.go: typeStr = "gatewayapi"). Do NOT
+      # rename to "gatewayapiprocessor" — that's the Go module path, not
+      # the OTel component type.
+      #
+      # Config schema follows gatewayapiprocessor/config.go (mapstructure
+      # tags). Parsers are intentionally omitted so the default chain
+      # from factory.go createDefaultConfig() applies (envoy with the
+      # full controller regex + format_regex, linkerd with the standard
+      # label map, passthrough last). Override here only if a future
+      # GatewayClass needs a controller pattern not in the defaults.
+      gatewayapi:
+        watch:
           resync_period: 60s
-          sync_timeout: 30s
-        parsers:
-          envoy:
-            enabled: true
-          linkerd:
-            enabled: true
-          passthrough:
-            enabled: true
-        # Cardinality guard — drop UIDs from metrics path (they are
-        # high-cardinality and not actionable in metrics queries).
-        attribute_policy:
-          metrics:
-            exclude:
-              - "k8s.gateway.uid"
-              - "k8s.httproute.uid"
-              - "k8s.grpcroute.uid"
-              - "k8s.gatewayclass.uid"
+        informer_sync_timeout: 30s
+        # Cardinality guard — drop UIDs from the metrics enrichment so
+        # the gateway doesn't emit high-cardinality (and not actionable)
+        # k8s.*.uid metric attributes. Also extends the factory defaults
+        # to cover GRPCRoute and GatewayClass.
+        enrich:
+          traces: true
+          logs: true
+          metrics: true
+          exclude_from_metric_attributes:
+            - "k8s.gateway.uid"
+            - "k8s.httproute.uid"
+            - "k8s.grpcroute.uid"
+            - "k8s.gatewayclass.uid"
         emit_status_conditions: true
 
       # semconv normalization. Map any ad-hoc names from the OTel Demo
@@ -216,7 +229,7 @@ spec:
           receivers: [otlp]
           processors:
             - memory_limiter
-            - gatewayapiprocessor
+            - gatewayapi
             - transform
             - tail_sampling
             - batch
@@ -225,7 +238,7 @@ spec:
           receivers: [otlp]
           processors:
             - memory_limiter
-            - gatewayapiprocessor
+            - gatewayapi
             - transform
             - batch
           exporters: [otlphttp/dynatrace]

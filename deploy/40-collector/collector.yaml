@@ -1,6 +1,6 @@
 # Custom OTel Collector running gatewayapiprocessor.
 # Pipeline placement per ISI-670 processor-spec §4.2:
-#   receivers → memory_limiter → k8sattributes → gatewayapiprocessor → batch → exporters
+#   receivers → memory_limiter → k8sattributes → gatewayapi → batch → exporters
 #
 # Managed via the OTel Operator as an OpenTelemetryCollector CR so the demo
 # beat is "kubectl apply on a CR", not a raw Deployment patch.
@@ -87,7 +87,12 @@ spec:
               - from: connection
 
       # The reason we exist.
-      gatewayapiprocessor:
+      #
+      # The processor's registered Type is "gatewayapi" (per
+      # gatewayapiprocessor/factory.go: typeStr = "gatewayapi"). Do NOT
+      # rename to "gatewayapiprocessor" — that's the Go module path, not
+      # the OTel component type.
+      gatewayapi:
         informers:
           resync_period: 60s
           sync_timeout: 30s
@@ -146,7 +151,7 @@ spec:
           processors:
             - memory_limiter
             - k8sattributes
-            - gatewayapiprocessor
+            - gatewayapi
             - batch
           exporters: [otlphttp/dynatrace]
         metrics:
@@ -154,7 +159,7 @@ spec:
           processors:
             - memory_limiter
             - k8sattributes
-            - gatewayapiprocessor
+            - gatewayapi
             - batch
           exporters: [otlphttp/dynatrace]
         logs:
@@ -162,6 +167,6 @@ spec:
           processors:
             - memory_limiter
             - k8sattributes
-            - gatewayapiprocessor
+            - gatewayapi
             - batch
           exporters: [otlphttp/dynatrace]
