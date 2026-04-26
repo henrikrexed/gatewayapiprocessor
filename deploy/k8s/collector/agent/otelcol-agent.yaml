@@ -17,8 +17,8 @@
 #   * batch                     → MUST be last processor.
 #
 # Image, operator, and semconv versions track gatewayapiprocessor/VERSIONS.md
-# (OTel Operator v0.150.0, Collector v0.150.0, custom collector image
-# pinned at ghcr.io/isi-observable/otelcol-gatewayapi:2026-04-21).
+# (OTel Operator v0.149.0, Collector v0.150.0, custom collector image
+# pinned at ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21).
 #
 # Sized for the workload pattern in obs-annex §C: ~30 RPS per node from
 # the OTel Demo + ambient/Kgateway data plane. Headroom is 2x; if a
@@ -36,7 +36,7 @@ metadata:
 spec:
   mode: daemonset
   serviceAccount: otelcol-agent
-  image: ghcr.io/isi-observable/otelcol-gatewayapi:2026-04-21
+  image: ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21
   imagePullPolicy: IfNotPresent
   hostNetwork: false
   resources:

@@ -19,8 +19,8 @@
 #   * gatewayapiprocessor runs ONLY here, never at the agent.
 #   * resourcedetectionprocessor is NOT used (K8s-only cluster).
 #
-# Versions track gatewayapiprocessor/VERSIONS.md (OTel Operator v0.150.0,
-# Collector v0.150.0). Image pinned to ghcr.io/isi-observable/otelcol-gatewayapi:2026-04-21
+# Versions track gatewayapiprocessor/VERSIONS.md (OTel Operator v0.149.0,
+# Collector v0.150.0). Image pinned to ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21
 # per the same file.
 #
 # Dynatrace credential is read from Secret/dt-otlp-ingest (issued by
@@ -39,7 +39,7 @@ spec:
   mode: deployment
   replicas: 2
   serviceAccount: otelcol-gateway
-  image: ghcr.io/isi-observable/otelcol-gatewayapi:2026-04-21
+  image: ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21
   imagePullPolicy: IfNotPresent
   # Spread across nodes so a single-node failure doesn't take both pods.
   podDisruptionBudget:
