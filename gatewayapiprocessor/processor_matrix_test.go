@@ -1,8 +1,28 @@
 package gatewayapiprocessor
 
+// Guard 1 enforcement (obs-annex §E, ISI-749 → ISI-756).
+//
+// The Observability annex declared parser parity between the kind demo cluster
+// and the new ClusterAPI cluster — *no per-cluster code path*. The Envoy
+// route_name parser (parser/envoy.go) is data-driven: a configurable regex
+// with named captures (ns, name, optional rule/match) handles every cluster
+// identically. To prevent regressions, this matrix file enforces Guard 1 of
+// the obs-annex:
+//
+//	"Add a processor_matrix_test row that runs with k8s.cluster.name=
+//	clusterapi-isi-01 resource attribute set, asserts the same expected
+//	k8s.gateway.* / k8s.httproute.* enrichment as the kind run."
+//
+// See TestEnrichment_ClusterAttribute_ParserParity below for the enforcement
+// row. Any future change that introduces a per-cluster code path MUST keep
+// the parity assertion green; if it cannot, the change is a parser-parity
+// regression and belongs in a new gatewayapiprocessor issue, not a
+// per-cluster fork.
+
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -389,6 +409,97 @@ func TestFactory_CreatesAllThreeProcessors(t *testing.T) {
 	mp, err := factory.CreateMetrics(context.Background(), set, cfg, consumertest.NewNop())
 	require.NoError(t, err)
 	require.NotNil(t, mp)
+}
+
+// TestEnrichment_ClusterAttribute_ParserParity is the test enforcement of
+// Guard 1 from the obs-annex (see file preamble). Two rows — kind-isi-01 and
+// clusterapi-isi-01 — are run through the same processor with the same parser
+// config, the same RouteLookup, and the same input span. The k8s.cluster.name
+// resource attribute is the *only* thing that varies. The test asserts that:
+//
+//  1. enrichment runs and stamps a non-empty k8s.gateway.* / k8s.httproute.*
+//     attribute set on the kind row (otherwise a parser regression would
+//     silently make this test pass), and
+//  2. the clusterapi row produces a byte-for-byte identical attribute set,
+//     proving the parser does NOT special-case the cluster, and
+//  3. the k8s.cluster.name resource attribute survives enrichment unchanged
+//     so downstream Dynatrace Management Zone routing (obs-annex §D) keeps
+//     working.
+//
+// A future per-cluster code path would surface here as a diff in (2) — fail
+// the build, force the regression into review.
+func TestEnrichment_ClusterAttribute_ParserParity(t *testing.T) {
+	const routeName = "httproute/default/api/rule/0/match/0"
+
+	// Snapshot every k8s.gateway.* / k8s.gatewayclass.* / k8s.httproute.* /
+	// k8s.gatewayapi.* attribute on the enriched span into a comparable map.
+	snapshot := func(attrs pcommon.Map) map[string]string {
+		out := map[string]string{}
+		attrs.Range(func(k string, v pcommon.Value) bool {
+			if strings.HasPrefix(k, "k8s.gateway.") ||
+				strings.HasPrefix(k, "k8s.gatewayclass.") ||
+				strings.HasPrefix(k, "k8s.httproute.") ||
+				strings.HasPrefix(k, "k8s.gatewayapi.") {
+				out[k] = v.AsString()
+			}
+			return true
+		})
+		return out
+	}
+
+	run := func(t *testing.T, clusterName string) map[string]string {
+		t.Helper()
+		lookup := newStaticLookup()
+		lookup.put(RouteKindHTTPRoute, "default", "api", RouteAttributes{
+			Kind:                       RouteKindHTTPRoute,
+			Name:                       "api",
+			Namespace:                  "default",
+			UID:                        "uid-api",
+			GatewayName:                "public",
+			GatewayNamespace:           "default",
+			GatewayUID:                 "gw-uid",
+			GatewayListenerName:        "https",
+			GatewayClassName:           "istio",
+			GatewayClassControllerName: "istio.io/gateway-controller",
+		})
+		tp := newTestProcessors(t, lookup, nil)
+
+		td := ptrace.NewTraces()
+		rs := td.ResourceSpans().AppendEmpty()
+		rs.Resource().Attributes().PutStr("k8s.cluster.name", clusterName)
+		ss := rs.ScopeSpans().AppendEmpty()
+		sp := ss.Spans().AppendEmpty()
+		sp.Attributes().PutStr("route_name", routeName)
+
+		require.NoError(t, tp.traces.ConsumeTraces(context.Background(), td))
+		require.Equal(t, 1, len(tp.ts.AllTraces()))
+
+		out := tp.ts.AllTraces()[0]
+		// (3) k8s.cluster.name on resource must survive enrichment — the agent
+		// stamps it, the gateway must not strip it. obs-annex §D depends on it.
+		gotCluster, ok := out.ResourceSpans().At(0).Resource().Attributes().Get("k8s.cluster.name")
+		require.True(t, ok, "k8s.cluster.name resource attribute must be preserved")
+		require.Equal(t, clusterName, gotCluster.AsString())
+
+		return snapshot(getSpanAttrs(t, out))
+	}
+
+	kindOut := run(t, "kind-isi-01")
+	capiOut := run(t, "clusterapi-isi-01")
+
+	// (1) Sanity — without this, a future change that broke the parser would
+	// silently produce two empty maps and trivially "match".
+	require.Equal(t, "api", kindOut[AttrHTTPRouteName],
+		"kind row produced no httproute.name — parser regression")
+	require.Equal(t, "public", kindOut[AttrGatewayName],
+		"kind row produced no gateway.name — CR-metadata stamping broken")
+	require.Equal(t, "envoy", kindOut[AttrParser],
+		"kind row should have matched the envoy parser")
+
+	// (2) Parity — every k8s.gateway.* / k8s.httproute.* / k8s.gatewayapi.*
+	// attribute is identical regardless of k8s.cluster.name.
+	assert.Equal(t, kindOut, capiOut,
+		"parser output must be identical regardless of k8s.cluster.name (Guard 1)")
 }
 
 // ---- helpers ----

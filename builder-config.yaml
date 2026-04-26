@@ -24,6 +24,10 @@ processors:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/k8sattributesprocessor v0.150.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor v0.150.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.150.0
+  # tail_sampling on the gateway pipeline (ISI-754 §6.2 invariant — full-trace
+  # decisions live at the gateway, after agent loadbalancing has converged spans
+  # of the same trace on a single replica).
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/tailsamplingprocessor v0.150.0
   # The new one — ISI-670 gating deliverable.
   - gomod: github.com/henrikrexed/gatewayapiprocessor/gatewayapiprocessor v0.1.0
 
@@ -31,6 +35,9 @@ exporters:
   - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.150.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusexporter v0.150.0
   - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.150.0
+  # loadbalancing on the agent pipelines: traces+metrics keyed by traceID
+  # (ISI-754) and a second instance keyed by service for split logs (ISI-760).
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/loadbalancingexporter v0.150.0
 
 extensions:
   - gomod: go.opentelemetry.io/collector/extension/memorylimiterextension v0.150.0

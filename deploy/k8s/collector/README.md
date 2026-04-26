@@ -43,15 +43,25 @@ deploy/k8s/collector/
 - `k8sattributesprocessor` runs **only** at the agent. Never at the gateway.
 - `resourcedetectionprocessor` is **not** used. It targets VM/bare-metal — this
   cluster is pure K8s.
-- Agent → gateway transport is `loadbalancing` exporter with `routing_key: traceID`
-  via the `k8s` resolver against `otelcol-gateway-collector.gateway-collector`.
-  Without trace-ID affinity, gateway tail sampling sees fragmented decisions.
+- Agent → gateway transport uses **two `loadbalancing` exporter instances**, both
+  resolving the same gateway Service (`otelcol-gateway-collector.gateway-collector`)
+  via the `k8s` resolver, but **keyed differently per signal**:
+  - `loadbalancing` (`routing_key: traceID`) — used by the **traces** and
+    **metrics** pipelines. Trace-ID affinity is required so each trace's spans
+    converge on a single gateway replica (precondition for gateway-side tail
+    sampling).
+  - `loadbalancing/logs` (`routing_key: service`) — used by the **logs** pipeline
+    only. filelog records have no trace context; reusing the traceID-keyed
+    exporter would hash every record to the empty key and converge all log
+    volume onto a single gateway replica. Service-keyed routing spreads logs by
+    `service.name` while keeping the same Service / RBAC. Revisit this if any
+    future gateway processor needs full per-service log assembly.
 
 ## Image / version pin
 
-Both tiers run `ghcr.io/isi-observable/otelcol-gatewayapi:2026-04-21`. This is
+Both tiers run `ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21`. This is
 the OCB build pinned in `gatewayapiprocessor/VERSIONS.md` (Collector v0.150.0,
-Operator v0.150.0). Bumping the image requires a PR against `VERSIONS.md` and a
+Operator v0.149.0). Bumping the image requires a PR against `VERSIONS.md` and a
 re-record of the demo fallback clip.
 
 A Kyverno or Gatekeeper policy enforcing the image pin is a follow-up — see the
@@ -64,12 +74,12 @@ they are not.
 
 | Prereq | How to verify | Owner |
 |---|---|---|
-| OTel Operator v0.150.0 installed (CRDs `OpenTelemetryCollector`, `Instrumentation`) | `kubectl get crd opentelemetrycollectors.opentelemetry.io -o jsonpath='{.spec.versions[?(@.name=="v1beta1")].name}'` returns `v1beta1` and the operator pod runs v0.150.0 | ProxOps (workload cluster) |
+| OTel Operator v0.149.0 installed (CRDs `OpenTelemetryCollector`, `Instrumentation`) | `kubectl get crd opentelemetrycollectors.opentelemetry.io -o jsonpath='{.spec.versions[?(@.name=="v1beta1")].name}'` returns `v1beta1` and the operator pod runs v0.149.0 | ProxOps (workload cluster) |
 | cert-manager (operator dependency) | `kubectl get deploy -n cert-manager cert-manager` is Available | ProxOps |
 | Gateway API CRDs v1.3.0 (`gateways`, `httproutes`, `gatewayclasses`) | `kubectl get crd gateways.gateway.networking.k8s.io` exists and matches the v1.3.0 schema | ProxOps |
 | Namespace `gateway-collector` and `Secret/dt-otlp-ingest` (with keys `endpoint`, `api-token`) | `kubectl -n gateway-collector get secret dt-otlp-ingest -o jsonpath='{.data.endpoint}' \| base64 -d` matches the DT tenant URL | ISI-755 / ProxOps |
 | Workload cluster nodes Ready, kernel ≥ 6.x | `kubectl get nodes -o jsonpath='{.items[*].status.nodeInfo.kernelVersion}'` all start with `6.` | ProxOps (ISI-753 / ISI-738) |
-| Custom collector image pullable from harbor mirror or upstream ghcr.io | `crane manifest ghcr.io/isi-observable/otelcol-gatewayapi:2026-04-21` resolves | Build pipeline |
+| Custom collector image pullable from harbor mirror or upstream ghcr.io | `crane manifest ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21` resolves | Build pipeline |
 
 ## Apply order
 
@@ -104,8 +114,8 @@ kubectl -n otel-system rollout status ds/otelcol-agent-collector --timeout=180s
 # Two CRs, one each tier, gateway shows replicas=2.
 kubectl get otelcol -A
 # NAMESPACE           NAME              MODE        VERSION   READY   AGE   IMAGE
-# gateway-collector   otelcol-gateway   deployment  0.150.0   2/2     1m    ghcr.io/isi-observable/otelcol-gatewayapi:2026-04-21
-# otel-system         otelcol-agent     daemonset   0.150.0   N/N     1m    ghcr.io/isi-observable/otelcol-gatewayapi:2026-04-21
+# gateway-collector   otelcol-gateway   deployment  0.150.0   2/2     1m    ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21
+# otel-system         otelcol-agent     daemonset   0.150.0   N/N     1m    ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21
 
 # Synthetic span from inside the cluster.
 kubectl run -n default --rm -it --restart=Never tg --image=ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.150.0 -- \

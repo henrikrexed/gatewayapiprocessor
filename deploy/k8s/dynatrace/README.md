@@ -12,7 +12,7 @@ per cluster, reusing the existing Dynatrace tenant.
 
 §6.3 originally called for a per-cluster boundary (Management Zone in
 classic terminology). On the Grail-only target tenant
-(`https://oat05854.dev.dynatracelabs.com`) that would have decomposed
+(`https://<env-id>.live.dynatrace.com`) that would have decomposed
 into a per-cluster Bucket + Filter Segment + IAM policy + OpenPipeline
 route. Board feedback on this issue was unambiguous: **"we don't need
 dedicated segments or storage buckets in dynatrace"**. Telemetry from
