@@ -1,7 +1,7 @@
 # Resource-attribute stamp — fragment for the AGENT-tier collector
 # (DaemonSet), not the gateway. Documented here so the gateway-side
-# bundle has the full picture; physically included into the agent
-# config when ISI-754 lands.
+# bundle has the full picture; consumed by the agent
+# OpenTelemetryCollector CR in deploy/k8s/collector/agent/.
 #
 # Why this lives at the agent, not the gateway:
 #   - obs-annex §D, point 1: cluster identity must be stamped at the
@@ -10,9 +10,10 @@
 #     (e.g. a debug exporter the developer wires up locally) loses
 #     cluster-attribution and contaminates default_logs / default_spans.
 #
-# These three attributes are what `filter-segment-clusterapi-isi-01.yaml`
-# and `iam-policy-clusterapi-isi-01.yaml` filter on. If you change the
-# attribute names here you must also update those two files.
+# k8s.cluster.name is the attribute every cluster-scoped query relies
+# on (board scope decision 2026-04-26: no per-cluster Grail bucket /
+# filter segment / IAM policy — query-time filtering on this attribute
+# in the default buckets is the cluster boundary).
 processors:
   resource/cluster-id:
     attributes:
