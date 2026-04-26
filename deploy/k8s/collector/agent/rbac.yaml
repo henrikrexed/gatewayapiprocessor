@@ -5,8 +5,10 @@
 #   * k8sattributesprocessor reads pods/namespaces/nodes (+ owner refs
 #     via apps/* kinds) — required, this is the whole reason the
 #     enrichment is at the agent.
-#   * loadbalancingexporter k8s resolver reads endpoints/services in
-#     the gateway-collector namespace to discover the gateway pods.
+#   * loadbalancingexporter k8s resolver reads endpoints/endpointslices/services
+#     in the gateway-collector namespace to discover the gateway pods.
+#     v0.150.0 watches EndpointSlices (discovery.k8s.io/v1) preferentially
+#     over the legacy core/v1 Endpoints API.
 #   * NO Gateway-API verbs here — gatewayapiprocessor runs ONLY at the
 #     gateway (ISI-754 invariant). A single cluster-scoped LIST/WATCH
 #     on Gateway/HTTPRoute is the whole point of the split.
@@ -59,8 +61,15 @@ subjects:
     namespace: otel-system
 ---
 # loadbalancingexporter k8s resolver scope — namespaced to
-# gateway-collector. Endpoints LIST/WATCH only in that namespace,
-# nothing wider.
+# gateway-collector. LIST/WATCH only in that namespace, nothing wider.
+#
+# OTel collector v0.150.0 watches EndpointSlices (discovery.k8s.io/v1)
+# instead of the legacy core/v1 Endpoints API. Without the
+# discovery.k8s.io rule below the resolver spins forever logging
+# `endpointslices.discovery.k8s.io is forbidden` and the gateway never
+# becomes addressable from agents (telemetry queues + drops). The
+# legacy core/v1 endpoints rule stays in place for back-compat with
+# any older collector version that still falls back to it.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -72,6 +81,9 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["endpoints", "services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
