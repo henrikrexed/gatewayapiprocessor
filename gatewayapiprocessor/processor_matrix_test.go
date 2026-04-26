@@ -153,6 +153,99 @@ func TestEnrichment_GRPCRoute_StampsGRPCKeysOnly(t *testing.T) {
 	assert.False(t, hasUID)
 }
 
+// GRPCRoute status conditions: emit_status_conditions=true must stamp the
+// k8s.grpcroute.accepted / k8s.grpcroute.resolved_refs keys (NOT the
+// httproute.* siblings). Mirrors TestStatusConditions_Accepted for HTTPRoute.
+// ISI-785: closes the gap that left dashboards filtering on GRPCRoute status
+// returning zero rows for the GAMMA mesh demo.
+func TestEnrichment_GRPCRoute_StampsStatusConditions(t *testing.T) {
+	lookup := newStaticLookup()
+	tru := true
+	fls := false
+	lookup.put(RouteKindGRPCRoute, "grpc-ns", "svc", RouteAttributes{
+		Kind:         RouteKindGRPCRoute,
+		Name:         "svc",
+		Namespace:    "grpc-ns",
+		UID:          "uid",
+		Accepted:     &tru,
+		ResolvedRefs: &fls,
+		GatewayName:  "public",
+	})
+
+	tp := newTestProcessors(t, lookup, func(c *Config) {
+		c.EmitStatusConds = true
+		c.Parsers = []ParserConfig{
+			{
+				Name: "linkerd",
+				LinkerdLabels: LinkerdLabelsConfig{
+					RouteName: "route_name", RouteKind: "route_kind", RouteNamespace: "route_namespace",
+				},
+			},
+		}
+	})
+
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(),
+		singleSpanWith(map[string]string{
+			"route_name":      "svc",
+			"route_kind":      "GRPCRoute",
+			"route_namespace": "grpc-ns",
+		}),
+	))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+
+	got, ok := attrs.Get(AttrGRPCRouteAccepted)
+	require.True(t, ok, "k8s.grpcroute.accepted must be stamped when emit_status_conditions=true")
+	assert.True(t, got.Bool())
+
+	got, ok = attrs.Get(AttrGRPCRouteResolvedRefs)
+	require.True(t, ok, "k8s.grpcroute.resolved_refs=false must surface as a false bool, not be omitted")
+	assert.False(t, got.Bool())
+
+	// Cross-kind contamination guard: GRPCRoute spans must NOT carry httproute.* keys.
+	_, hasHTTPAccepted := attrs.Get(AttrHTTPRouteAccepted)
+	assert.False(t, hasHTTPAccepted, "GRPCRoute span must NOT stamp k8s.httproute.accepted")
+	_, hasHTTPResolved := attrs.Get(AttrHTTPRouteResolvedRefs)
+	assert.False(t, hasHTTPResolved, "GRPCRoute span must NOT stamp k8s.httproute.resolved_refs")
+}
+
+// emit_status_conditions=false on a GRPCRoute must suppress both grpcroute.*
+// status keys regardless of populated Accepted/ResolvedRefs in the lookup.
+func TestEmitStatusConditions_Off_GRPCRoute_DoesNotStamp(t *testing.T) {
+	lookup := newStaticLookup()
+	tru := true
+	lookup.put(RouteKindGRPCRoute, "grpc-ns", "svc", RouteAttributes{
+		Kind: RouteKindGRPCRoute, Name: "svc", Namespace: "grpc-ns",
+		Accepted: &tru, // even if populated, EmitStatusConds=false must suppress
+	})
+
+	tp := newTestProcessors(t, lookup, func(c *Config) {
+		c.EmitStatusConds = false
+		c.Parsers = []ParserConfig{
+			{
+				Name: "linkerd",
+				LinkerdLabels: LinkerdLabelsConfig{
+					RouteName: "route_name", RouteKind: "route_kind", RouteNamespace: "route_namespace",
+				},
+			},
+		}
+	})
+
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(),
+		singleSpanWith(map[string]string{
+			"route_name":      "svc",
+			"route_kind":      "GRPCRoute",
+			"route_namespace": "grpc-ns",
+		}),
+	))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+	_, ok := attrs.Get(AttrGRPCRouteAccepted)
+	assert.False(t, ok, "emit_status_conditions=false must suppress k8s.grpcroute.accepted")
+	_, ok = attrs.Get(AttrGRPCRouteResolvedRefs)
+	assert.False(t, ok)
+}
+
 // emit_status_conditions=false: informer projection leaves Accepted/ResolvedRefs
 // nil and the stamping path must not emit the attributes.
 func TestEmitStatusConditions_Off_DoesNotStamp(t *testing.T) {

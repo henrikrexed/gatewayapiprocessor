@@ -12,7 +12,7 @@ YAML mapstructure field names as declared in `gatewayapiprocessor/config.go`.
 | `watch`                   | object &mdash; [WatchConfig](#watch)   | see below        | Informer scoping.                                                 |
 | `parsers`                 | list &mdash; [ParserConfig](#parsers)  | see defaults     | Ordered parser chain. At least one entry required.                |
 | `enrich`                  | object &mdash; [EnrichConfig](#enrich) | see below        | Which signals to enrich and metrics cardinality guard.            |
-| `emit_status_conditions`  | bool                         | `true`           | When true, stamps `k8s.httproute.accepted` and `k8s.httproute.resolved_refs` from the HTTPRoute status subresource. |
+| `emit_status_conditions`  | bool                         | `true`           | When true, stamps `k8s.httproute.accepted` and `k8s.httproute.resolved_refs` from the HTTPRoute status subresource, and `k8s.grpcroute.accepted` and `k8s.grpcroute.resolved_refs` from the GRPCRoute status subresource. |
 | `backendref_fallback`     | object &mdash; [BackendRefFallback](#backendref_fallback) | see below | Best-effort enrichment when no HTTPRoute match is found. |
 | `informer_sync_timeout`   | duration                     | `30s`            | Upper bound on `Start()` waiting for informer caches to warm up. Must be >= 0. |
 

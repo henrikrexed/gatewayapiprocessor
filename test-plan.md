@@ -57,7 +57,7 @@ Unchanged from the v0.1 PR — canonical status/metric-filter/fallback path.
 - `TestEnrichment_PassthroughFallback` — unparseable route_name still stamps raw.
 - `TestEnrichment_LogsPath` — logs enrich end-to-end (rule/match/uid retained).
 
-### `processor_matrix_test.go` (17 — ISI-684 scope expansion)
+### `processor_matrix_test.go` (19 — ISI-684 scope expansion + ISI-785)
 
 Mixed-parser chain and per-signal matrix.
 
@@ -65,7 +65,9 @@ Mixed-parser chain and per-signal matrix.
 - `TestEnrichment_MixedParsers_LinkerdFallsThroughWhenEnvoyMisses`
 - `TestEnrichment_MixedParsers_PassthroughLastResort`
 - `TestEnrichment_GRPCRoute_StampsGRPCKeysOnly` — gRPC path: only `k8s.grpcroute.*` keys.
+- `TestEnrichment_GRPCRoute_StampsStatusConditions` — ISI-785: gRPC path stamps `k8s.grpcroute.accepted` / `k8s.grpcroute.resolved_refs` (and never the httproute siblings).
 - `TestEmitStatusConditions_Off_DoesNotStamp` — flag off suppresses `accepted`/`resolved_refs`.
+- `TestEmitStatusConditions_Off_GRPCRoute_DoesNotStamp` — ISI-785: flag off suppresses gRPC status keys.
 - `TestMetricAttributeFilter_GatewayUID_AndRawRouteName_Stripped` — full `exclude_from_metric_attributes` list.
 - `TestBackendRefFallback_Disabled_NoStamp`
 - `TestBackendRefFallback_UnknownAddress_NoStamp`
@@ -88,13 +90,15 @@ Mixed-parser chain and per-signal matrix.
 - `TestBackendRefsFromHTTPRoute_FiltersNonServiceAndDefaultsNamespace`
 - `TestRouteIndex_ConcurrentAccess_NoRaces` — 16 goroutines × 500 iters under `-race`.
 
-### `informer_helpers_test.go` (14 — CR projection unit tests)
+### `informer_helpers_test.go` (16 — CR projection unit tests)
 
 - `TestHTTPRouteToAttrs_WithGatewayAndClass` — full (gateway, gatewayclass, controller) chain.
 - `TestHTTPRouteToAttrs_UnknownGatewayParent_StillStampsRouteIdentity` — partial-observation safety.
 - `TestHTTPRouteToAttrs_EmitStatusConditions_Stamps`
 - `TestHTTPRouteToAttrs_EmitStatusConditions_Off_NoStatus`
 - `TestGRPCRouteToAttrs_BasicAndWithGateway`
+- `TestGRPCRouteToAttrs_EmitStatusConditions_Stamps` — ISI-785: GRPCRoute status → Accepted/ResolvedRefs.
+- `TestGRPCRouteToAttrs_EmitStatusConditions_Off_NoStatus` — ISI-785: flag off leaves them nil.
 - `TestStatusFlags_BothConditions` / `TestStatusFlags_NoParents`
 - `TestFormatParentRef_DefaultsWhenGroupKindUnset`
 - `TestFormatParentRef_ExplicitGroupKindAndNamespace`

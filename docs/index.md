@@ -42,6 +42,8 @@ surface &mdash; any bump is a breaking change.
 | `k8s.httproute.resolved_refs`     | `status.conditions[type=ResolvedRefs]`        |
 | `k8s.grpcroute.name`              | Matched GRPCRoute                             |
 | `k8s.grpcroute.namespace`         | Matched GRPCRoute                             |
+| `k8s.grpcroute.accepted`          | `status.conditions[type=Accepted]`            |
+| `k8s.grpcroute.resolved_refs`     | `status.conditions[type=ResolvedRefs]`        |
 | `k8s.gatewayapi.raw_route_name`   | Unparsable string (passthrough, excl. metrics)|
 | `k8s.gatewayapi.parser`           | Parser that won the lookup                    |
 

@@ -144,6 +144,43 @@ func TestGRPCRouteToAttrs_BasicAndWithGateway(t *testing.T) {
 	assert.Equal(t, "envoygwc", ra.GatewayClassName)
 }
 
+// GRPCRoute status conditions: with emit_status_conditions=true, the projection
+// must lift Accepted/ResolvedRefs out of gr.Status.Parents. ISI-785.
+func TestGRPCRouteToAttrs_EmitStatusConditions_Stamps(t *testing.T) {
+	gr := &gwv1.GRPCRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "grpc-ns"},
+		Status: gwv1.GRPCRouteStatus{RouteStatus: gwv1.RouteStatus{
+			Parents: []gwv1.RouteParentStatus{{
+				Conditions: []metav1.Condition{
+					{Type: "Accepted", Status: metav1.ConditionTrue},
+					{Type: "ResolvedRefs", Status: metav1.ConditionFalse},
+				},
+			}},
+		}},
+	}
+	ra := grpcRouteToAttrs(gr, newGatewayStore(), newGatewayClassStore(), &Config{EmitStatusConds: true})
+	require.NotNil(t, ra.Accepted)
+	require.NotNil(t, ra.ResolvedRefs)
+	assert.True(t, *ra.Accepted)
+	assert.False(t, *ra.ResolvedRefs)
+}
+
+func TestGRPCRouteToAttrs_EmitStatusConditions_Off_NoStatus(t *testing.T) {
+	gr := &gwv1.GRPCRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "grpc-ns"},
+		Status: gwv1.GRPCRouteStatus{RouteStatus: gwv1.RouteStatus{
+			Parents: []gwv1.RouteParentStatus{{
+				Conditions: []metav1.Condition{
+					{Type: "Accepted", Status: metav1.ConditionTrue},
+				},
+			}},
+		}},
+	}
+	ra := grpcRouteToAttrs(gr, newGatewayStore(), newGatewayClassStore(), &Config{EmitStatusConds: false})
+	assert.Nil(t, ra.Accepted, "emit_status_conditions=false must leave Accepted unpopulated on GRPCRoute")
+	assert.Nil(t, ra.ResolvedRefs)
+}
+
 // ---- statusFlags: Accepted/ResolvedRefs extraction ----
 
 func TestStatusFlags_BothConditions(t *testing.T) {

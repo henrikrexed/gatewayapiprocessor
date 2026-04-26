@@ -329,12 +329,18 @@ func (p *gatewayAPIProcessor) stampRouteAttrs(attrs pcommon.Map, ra RouteAttribu
 	if ra.ParentRef != "" && ra.Kind != RouteKindGRPCRoute {
 		putString(attrs, AttrHTTPRouteParentRef, ra.ParentRef)
 	}
-	if p.cfg.EmitStatusConds && ra.Kind != RouteKindGRPCRoute {
+	if p.cfg.EmitStatusConds {
+		acceptedKey := AttrHTTPRouteAccepted
+		resolvedKey := AttrHTTPRouteResolvedRefs
+		if ra.Kind == RouteKindGRPCRoute {
+			acceptedKey = AttrGRPCRouteAccepted
+			resolvedKey = AttrGRPCRouteResolvedRefs
+		}
 		if ra.Accepted != nil {
-			attrs.PutBool(AttrHTTPRouteAccepted, *ra.Accepted)
+			attrs.PutBool(acceptedKey, *ra.Accepted)
 		}
 		if ra.ResolvedRefs != nil {
-			attrs.PutBool(AttrHTTPRouteResolvedRefs, *ra.ResolvedRefs)
+			attrs.PutBool(resolvedKey, *ra.ResolvedRefs)
 		}
 	}
 	if ra.GatewayName != "" {
