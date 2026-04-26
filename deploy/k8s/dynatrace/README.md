@@ -42,6 +42,7 @@ What the bundle no longer ships (removed in this PR):
 ```
 deploy/k8s/dynatrace/
 ├── 00-namespace.yaml                              gateway-collector ns
+├── dynakube.yaml                                  DynaKube CR — scoped OneAgent injection
 ├── secret-dt-otlp-ingest.example.yaml             Secret shape (no real values)
 ├── sealedsecret-dt-otlp-ingest.template.yaml      SealedSecret template
 ├── README.md                                      this file
@@ -118,6 +119,42 @@ If the query returns 0 rows after 2 minutes:
   for `otlphttp/dynatrace` 401 (token bad scope) or 429 (ingest cap).
 - Tenant side: spans should appear in the default `spans` bucket;
   filter on `k8s.cluster.name` to attribute to this cluster.
+
+## DynaKube CR — scoped OneAgent injection
+
+The Dynatrace operator on this cluster is driven by a single
+`DynaKube` CR (`dynakube.yaml`). Two design choices matter for
+ISI-680:
+
+1. **OneAgent uses `applicationMonitoring` with a `namespaceSelector`
+   gated on the label `oneagent=true`** — _opt-in_, not opt-out.
+   Demo workload namespaces (`otel-demo`, `gateway-collector`,
+   `otel-system`, `obi-system`) intentionally stay unlabeled, so
+   they do **not** receive code-module injection.
+2. **The OTel SDK apps in `otel-demo` already emit OTLP** through
+   `otelcol-agent → otelcol-gateway → Dynatrace`. Injecting OneAgent
+   on top would double-instrument every span and metric — exactly the
+   regression flagged on ISI-680 board feedback 2026-04-26 15:44Z.
+
+If a future namespace _does_ want OneAgent code-module coverage in
+addition to OTLP (e.g. legacy app without SDK instrumentation), the
+operator command is:
+
+```bash
+kubectl label namespace <ns> oneagent=true
+# Existing pods do NOT auto-rotate — the webhook only injects on
+# create. Either delete the pods or roll the workload:
+kubectl -n <ns> rollout restart deploy/<name>
+```
+
+To clear a previously injected pod after switching from
+`cloudNativeFullStack` (or after dropping the label), the same
+rollout-restart pattern applies — the `dynakube.dynatrace.com/injected`
+annotation persists on the pod metadata until the pod is replaced.
+
+ActiveGate is enabled with the `kubernetes-monitoring`,
+`metrics-ingest`, `dynatrace-api`, and `routing` capabilities so K8s
+API monitoring + smartscape work without OneAgent on every node.
 
 ## Open handoffs (blockers — who needs to do what)
 
