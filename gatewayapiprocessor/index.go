@@ -76,11 +76,25 @@ func (r *routeIndex) upsertHTTPRoute(ra RouteAttributes, backendRefs []backendRe
 	}
 }
 
-// upsertGRPCRoute mirrors upsertHTTPRoute for GRPCRoute CRs.
-func (r *routeIndex) upsertGRPCRoute(ra RouteAttributes) {
+// upsertGRPCRoute mirrors upsertHTTPRoute for GRPCRoute CRs. Indexes by
+// backendRef so GAMMA mesh-mode gRPC spans (which carry server.address /
+// net.peer.name pointing at the backend Service) can resolve via the
+// backendref_fallback path.
+func (r *routeIndex) upsertGRPCRoute(ra RouteAttributes, backendRefs []backendRef) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.routes[routeKey(RouteKindGRPCRoute, ra.Namespace, ra.Name)] = ra
+	key := routeKey(RouteKindGRPCRoute, ra.Namespace, ra.Name)
+	r.routes[key] = ra
+	owner := key
+	for _, b := range backendRefs {
+		bkey := b.Namespace + "/" + b.Name
+		if existing, ok := r.claimedBackends[bkey]; ok && existing != owner {
+			delete(r.backendIndex, bkey)
+			continue
+		}
+		r.claimedBackends[bkey] = owner
+		r.backendIndex[bkey] = ra
+	}
 }
 
 // deleteHTTPRoute removes a route and its backendRef attribution entries.
@@ -100,7 +114,14 @@ func (r *routeIndex) deleteHTTPRoute(ns, name string) {
 func (r *routeIndex) deleteGRPCRoute(ns, name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.routes, routeKey(RouteKindGRPCRoute, ns, name))
+	key := routeKey(RouteKindGRPCRoute, ns, name)
+	delete(r.routes, key)
+	for bkey, owner := range r.claimedBackends {
+		if owner == key {
+			delete(r.claimedBackends, bkey)
+			delete(r.backendIndex, bkey)
+		}
+	}
 }
 
 // backendRef is the narrowed projection of HTTPRouteRule.BackendRefs we keep
@@ -133,6 +154,56 @@ func backendRefsFromHTTPRoute(route *gwv1.HTTPRoute) []backendRef {
 			}
 			out = append(out, backendRef{Namespace: ns, Name: string(ref.Name)})
 		}
+	}
+	// GAMMA: parent Service is the destination in mesh mode. Including it in
+	// the backend index lets spans hitting that Service resolve via the
+	// backendref_fallback path even when the route declares no explicit
+	// backendRef (uncommon but legal).
+	for _, pr := range route.Spec.ParentRefs {
+		if !isServiceParent(pr) {
+			continue
+		}
+		ns := route.Namespace
+		if pr.Namespace != nil && *pr.Namespace != "" {
+			ns = string(*pr.Namespace)
+		}
+		out = append(out, backendRef{Namespace: ns, Name: string(pr.Name)})
+	}
+	return out
+}
+
+// backendRefsFromGRPCRoute mirrors backendRefsFromHTTPRoute for GRPCRoute.
+// Required so GAMMA gRPC spans (server.address resolves to the backend
+// Service) can match via the backendref_fallback path. Also includes the
+// parent Service for GAMMA routes — it IS the destination in mesh mode and
+// often equals the only backendRef, but indexing both is harmless.
+func backendRefsFromGRPCRoute(route *gwv1.GRPCRoute) []backendRef {
+	out := make([]backendRef, 0)
+	for _, rule := range route.Spec.Rules {
+		for _, br := range rule.BackendRefs {
+			ref := br.BackendObjectReference
+			if ref.Group != nil && *ref.Group != "" {
+				continue
+			}
+			if ref.Kind != nil && *ref.Kind != "Service" {
+				continue
+			}
+			ns := route.Namespace
+			if ref.Namespace != nil && *ref.Namespace != "" {
+				ns = string(*ref.Namespace)
+			}
+			out = append(out, backendRef{Namespace: ns, Name: string(ref.Name)})
+		}
+	}
+	for _, pr := range route.Spec.ParentRefs {
+		if !isServiceParent(pr) {
+			continue
+		}
+		ns := route.Namespace
+		if pr.Namespace != nil && *pr.Namespace != "" {
+			ns = string(*pr.Namespace)
+		}
+		out = append(out, backendRef{Namespace: ns, Name: string(pr.Name)})
 	}
 	return out
 }

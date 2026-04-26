@@ -320,14 +320,17 @@ func (p *gatewayAPIProcessor) stampCRMetadata(attrs pcommon.Map, r parser.Result
 func (p *gatewayAPIProcessor) stampRouteAttrs(attrs pcommon.Map, ra RouteAttributes) {
 	if ra.UID != "" {
 		if ra.Kind == RouteKindGRPCRoute {
-			// UID is stamped under HTTPRoute key in the schema; gRPC routes keep
-			// only name/namespace per processor-spec §1.2 table row 9-10.
+			putString(attrs, AttrGRPCRouteUID, ra.UID)
 		} else {
 			putString(attrs, AttrHTTPRouteUID, ra.UID)
 		}
 	}
-	if ra.ParentRef != "" && ra.Kind != RouteKindGRPCRoute {
-		putString(attrs, AttrHTTPRouteParentRef, ra.ParentRef)
+	if ra.ParentRef != "" {
+		if ra.Kind == RouteKindGRPCRoute {
+			putString(attrs, AttrGRPCRouteParentRef, ra.ParentRef)
+		} else {
+			putString(attrs, AttrHTTPRouteParentRef, ra.ParentRef)
+		}
 	}
 	if p.cfg.EmitStatusConds {
 		acceptedKey := AttrHTTPRouteAccepted
@@ -343,6 +346,14 @@ func (p *gatewayAPIProcessor) stampRouteAttrs(attrs pcommon.Map, ra RouteAttribu
 			attrs.PutBool(resolvedKey, *ra.ResolvedRefs)
 		}
 	}
+	// Always stamp the route-mode discriminator. Empty defaults to ingress for
+	// back-compat with RouteAttributes constructed by older code paths/tests.
+	mode := ra.RouteMode
+	if mode == "" {
+		mode = RouteModeIngress
+	}
+	putString(attrs, AttrRouteMode, mode)
+
 	if ra.GatewayName != "" {
 		putString(attrs, AttrGatewayName, ra.GatewayName)
 	}
@@ -361,33 +372,58 @@ func (p *gatewayAPIProcessor) stampRouteAttrs(attrs pcommon.Map, ra RouteAttribu
 	if ra.GatewayClassControllerName != "" {
 		putString(attrs, AttrGatewayClassController, ra.GatewayClassControllerName)
 	}
+
+	// GAMMA mesh-mode: stamp parent Service identity.
+	if ra.ParentServiceName != "" {
+		putString(attrs, AttrParentServiceName, ra.ParentServiceName)
+	}
+	if ra.ParentServiceNamespace != "" {
+		putString(attrs, AttrParentServiceNamespace, ra.ParentServiceNamespace)
+	}
 }
 
-// applyBackendRefFallback tries to resolve a route via the server.address →
-// HTTPRoute index when no parser matched.
+// applyBackendRefFallback tries to resolve a route via the
+// server.address / net.peer.name → route index when no parser matched.
+//
+// Walks p.cfg.BackendRefFallback.effectiveSourceAttrs() in order; first
+// non-empty value that decodes to <svc>.<ns>.* and matches the index wins.
+// Supports both modern sem-conv (server.address, 1.20+) and legacy OTel
+// (net.peer.name) so auto-instrumentation that hasn't migrated still resolves.
 func (p *gatewayAPIProcessor) applyBackendRefFallback(view combinedView, recordAttrs pcommon.Map, signal signalKind) {
-	key := p.cfg.BackendRefFallback.SourceAttribute
-	if key == "" {
+	keys := p.cfg.BackendRefFallback.effectiveSourceAttrs()
+	if len(keys) == 0 {
 		return
 	}
-	addr, ok := view.Get(key)
-	if !ok || addr == "" {
-		return
+	var ra RouteAttributes
+	var matched bool
+	for _, key := range keys {
+		addr, ok := view.Get(key)
+		if !ok || addr == "" {
+			continue
+		}
+		ns, svc := splitAddress(addr)
+		if ns == "" || svc == "" {
+			continue
+		}
+		if r, ok := p.lookup.LookupByBackendService(ns, svc); ok {
+			ra = r
+			matched = true
+			break
+		}
 	}
-	ns, svc := splitAddress(addr)
-	if ns == "" || svc == "" {
-		return
-	}
-	ra, ok := p.lookup.LookupByBackendService(ns, svc)
-	if !ok {
+	if !matched {
 		return
 	}
 	// Synthesize a parser result so we can share the stamping path.
+	kind := "HTTPRoute"
+	if ra.Kind == RouteKindGRPCRoute {
+		kind = "GRPCRoute"
+	}
 	pr := parser.Result{
 		Matched:    true,
 		Namespace:  ra.Namespace,
 		Name:       ra.Name,
-		Kind:       "HTTPRoute",
+		Kind:       kind,
 		RuleIndex:  -1,
 		MatchIndex: -1,
 		ParserName: "backendref_fallback",
