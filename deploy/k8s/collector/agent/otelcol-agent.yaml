@@ -224,6 +224,35 @@ spec:
           k8s:
             service: otelcol-gateway-collector.gateway-collector
 
+      # Stream-keyed load balancing → gateway pods, for the metrics
+      # pipeline only. Metrics carry no trace context (so traceID hashes
+      # to the empty key and converges on a single gateway replica) and
+      # the loadbalancing exporter explicitly rejects routing_key=traceID
+      # for the metrics signal at config-decode time. routing_key=streamID
+      # spreads by metric stream identity (resource + scope + metric +
+      # attribute set), giving a stable per-stream affinity that lets
+      # downstream gateway-side aggregations (if/when added) avoid
+      # split-brain across replicas while still distributing load.
+      loadbalancing/metrics:
+        routing_key: streamID
+        protocol:
+          otlp:
+            tls:
+              insecure: true
+            timeout: 10s
+            sending_queue:
+              enabled: true
+              num_consumers: 4
+              queue_size: 1000
+            retry_on_failure:
+              enabled: true
+              initial_interval: 1s
+              max_interval: 10s
+              max_elapsed_time: 60s
+        resolver:
+          k8s:
+            service: otelcol-gateway-collector.gateway-collector
+
       # Debug tap — off by default. Flip verbosity to detailed during
       # rehearsal only.
       debug:
@@ -253,8 +282,11 @@ spec:
             - batch
           # Metrics don't need trace-ID affinity, but routing through
           # the gateway keeps DT-side egress consolidated and lets the
-          # gateway own all backend authentication.
-          exporters: [loadbalancing]
+          # gateway own all backend authentication. routing_key=streamID
+          # (NOT traceID) — the loadbalancing exporter rejects traceID
+          # for metrics at config-decode time. See loadbalancing/metrics
+          # above.
+          exporters: [loadbalancing/metrics]
         logs:
           receivers: [otlp, filelog]
           processors:
