@@ -63,7 +63,7 @@ ${DT_TENANT_URL}/api/v2/otlp/v1/{traces,metrics,logs}
 ```
 
 - For the dev tenant referenced in the obs-annex:
-  `https://oat05854.dev.apps.dynatracelabs.com/api/v2/otlp`
+  `https://<env-id>.live.dynatrace.com/api/v2/otlp`
 - For SaaS Live: `https://<env-id>.live.dynatrace.com/api/v2/otlp`
 - For Managed: `https://<cluster>/e/<env-id>/api/v2/otlp`
 

@@ -13,7 +13,7 @@ Decision context: ISI-749 §6.3 / `obs-annex` §D — separate ingest token
 ISI-749 §6.3 calls for a **Management Zone** scoped to
 `k8s.cluster.name=clusterapi-isi-01`. On a Grail-only Dynatrace tenant
 (which this is — confirmed against
-`https://oat05854.dev.apps.dynatracelabs.com`), the classic Management
+`https://<env-id>.live.dynatrace.com`), the classic Management
 Zone schema is not available. Its boundary semantics decompose into
 three Grail-native resources:
 
