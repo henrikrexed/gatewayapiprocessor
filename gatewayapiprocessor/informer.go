@@ -239,7 +239,7 @@ func httpRouteToAttrs(hr *gwv1.HTTPRoute, gwStore *gatewayStore, gcStore *gatewa
 	return ra
 }
 
-func grpcRouteToAttrs(gr *gwv1.GRPCRoute, gwStore *gatewayStore, gcStore *gatewayClassStore, _ *Config) RouteAttributes {
+func grpcRouteToAttrs(gr *gwv1.GRPCRoute, gwStore *gatewayStore, gcStore *gatewayClassStore, cfg *Config) RouteAttributes {
 	ra := RouteAttributes{
 		Kind:      RouteKindGRPCRoute,
 		Name:      gr.Name,
@@ -265,6 +265,9 @@ func grpcRouteToAttrs(gr *gwv1.GRPCRoute, gwStore *gatewayStore, gcStore *gatewa
 				ra.GatewayClassControllerName = string(gc.Spec.ControllerName)
 			}
 		}
+	}
+	if cfg.EmitStatusConds {
+		ra.Accepted, ra.ResolvedRefs = statusFlags(gr.Status.Parents)
 	}
 	return ra
 }

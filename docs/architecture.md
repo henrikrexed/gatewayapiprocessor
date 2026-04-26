@@ -63,7 +63,9 @@ On every ConsumeTraces / ConsumeLogs / ConsumeMetrics call:
 4. **Status conditions.** When `emit_status_conditions: true`,
    `k8s.httproute.accepted` and `k8s.httproute.resolved_refs` are stamped from
    the HTTPRoute status subresource's `Accepted` and `ResolvedRefs`
-   conditions.
+   conditions. The same logic applies to GRPCRoute, stamping
+   `k8s.grpcroute.accepted` and `k8s.grpcroute.resolved_refs` from the
+   GRPCRoute status subresource.
 
 ## Parser chain
 
@@ -131,8 +133,8 @@ when no HTTPRoute match is resolved. It reads a configurable attribute
 (default `server.address`, commonly set by `k8sattributes`) and resolves it
 against the informer's backend-to-route index. The fallback only fires when
 the primary lookup fails, and it is a best-effort signal &mdash; records enriched
-this way do **not** receive `k8s.httproute.accepted` or
-`k8s.httproute.resolved_refs`.
+this way do **not** receive `k8s.httproute.accepted` /
+`k8s.httproute.resolved_refs` (or the GRPCRoute equivalents).
 
 ## Failure modes
 

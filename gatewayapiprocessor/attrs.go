@@ -20,8 +20,10 @@ const (
 	AttrHTTPRouteAccepted     = "k8s.httproute.accepted"
 	AttrHTTPRouteResolvedRefs = "k8s.httproute.resolved_refs"
 
-	AttrGRPCRouteName      = "k8s.grpcroute.name"
-	AttrGRPCRouteNamespace = "k8s.grpcroute.namespace"
+	AttrGRPCRouteName         = "k8s.grpcroute.name"
+	AttrGRPCRouteNamespace    = "k8s.grpcroute.namespace"
+	AttrGRPCRouteAccepted     = "k8s.grpcroute.accepted"
+	AttrGRPCRouteResolvedRefs = "k8s.grpcroute.resolved_refs"
 
 	AttrRawRouteName = "k8s.gatewayapi.raw_route_name"
 	AttrParser       = "k8s.gatewayapi.parser"
