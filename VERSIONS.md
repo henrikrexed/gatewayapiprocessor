@@ -12,7 +12,7 @@ Pinned manifest for the `gatewayapiprocessor` demo stack.
 | Gateway API CRDs              | v1.3.0         | Standard channel; matches Phase-1 research baseline (ISI-665)       |
 | Istio (ambient profile)       | 1.26.0         | Ambient GA; waypoint `Telemetry` API stable                         |
 | Kgateway                      | v2.1.0         | CNCF-donated release; `HttpListenerPolicy` available                |
-| OTel Operator                 | v0.150.0       | Matches collector version pin (bumped by ISI-687)                   |
+| OTel Operator                 | v0.149.0       | Latest upstream operator release at demo cut; CRD `v1beta1` schema identical to v0.150.0 (no upstream v0.150 operator yet — see ISI-754) |
 | OTel Collector (OCB build)    | v0.150.0       | Latest 0.150 release line; stable modules at v1.56.0                |
 | OBI (opentelemetry-ebpf-...)  | v0.8.0         | Current release; k8s metadata enrichment available                  |
 | OTel Demo                     | v2.2.0         | Carries HTTPRoute-ready manifests                                   |
@@ -72,8 +72,9 @@ Source: [ISI-753](https://paperclip.isitobservable.com/ISI/issues/ISI-753).
 
 ## Image tags
 
-- Custom collector: `ghcr.io/isi-observable/otelcol-gatewayapi:2026-04-21`
-  - Also tagged `:latest` until next version bump.
+- Custom collector: `ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21`
+  - Also tagged `:latest` until next version bump (semver path; published by `release.yml`).
+  - Date-stamped pins (e.g. `:2026-04-21`) are published by `.github/workflows/publish-ocb-image.yml` on `ocb-YYYY-MM-DD` tag pushes.
   - Multi-arch: `linux/amd64`, `linux/arm64`.
 
 ## Update procedure
