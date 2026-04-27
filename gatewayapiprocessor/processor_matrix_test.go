@@ -352,6 +352,122 @@ func TestBackendRefFallback_AmbiguousOwner_NoStamp(t *testing.T) {
 	assert.False(t, ok, "ambiguous backend must NOT mis-attribute to either owner")
 }
 
+// backendref_fallback (ISI-802): bare-hostname server.address (e.g. "cart")
+// must resolve via the resource's k8s.namespace.name. This is the default
+// shape emitted by the OTel SDK auto-instrumentation for in-cluster traffic.
+func TestBackendRefFallback_BareHostname_HTTPRoute(t *testing.T) {
+	lookup := newStaticLookup()
+	lookup.putBackend("otel-demo", "cart", RouteAttributes{
+		Kind: RouteKindHTTPRoute, Name: "cart-route", Namespace: "otel-demo", UID: "uid-cart",
+	})
+
+	tp := newTestProcessors(t, lookup, func(c *Config) {
+		c.BackendRefFallback = BackendRefFallback{Enabled: true, SourceAttribute: "server.address"}
+	})
+
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	rs.Resource().Attributes().PutStr("k8s.namespace.name", "otel-demo")
+	ss := rs.ScopeSpans().AppendEmpty()
+	sp := ss.Spans().AppendEmpty()
+	sp.Attributes().PutStr("server.address", "cart") // bare hostname
+
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(), td))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+	name, ok := attrs.Get(AttrHTTPRouteName)
+	require.True(t, ok, "bare hostname must resolve via resource k8s.namespace.name")
+	assert.Equal(t, "cart-route", name.AsString())
+
+	ns, ok := attrs.Get(AttrHTTPRouteNamespace)
+	require.True(t, ok)
+	assert.Equal(t, "otel-demo", ns.AsString())
+
+	parser, ok := attrs.Get(AttrParser)
+	require.True(t, ok)
+	assert.Equal(t, "backendref_fallback", parser.AsString())
+}
+
+// backendref_fallback (ISI-802): same bare-hostname path but resolves to a
+// GRPCRoute. Confirms GAMMA mesh-mode auto-instr works without a transform
+// workaround.
+func TestBackendRefFallback_BareHostname_GRPCRoute(t *testing.T) {
+	lookup := newStaticLookup()
+	lookup.putBackend("otel-demo", "checkout", RouteAttributes{
+		Kind: RouteKindGRPCRoute, Name: "frontend-to-checkout", Namespace: "otel-demo", UID: "uid-checkout",
+	})
+
+	tp := newTestProcessors(t, lookup, func(c *Config) {
+		c.BackendRefFallback = BackendRefFallback{
+			Enabled:          true,
+			SourceAttributes: []string{"server.address", "net.peer.name"},
+		}
+	})
+
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	rs.Resource().Attributes().PutStr("k8s.namespace.name", "otel-demo")
+	ss := rs.ScopeSpans().AppendEmpty()
+	sp := ss.Spans().AppendEmpty()
+	sp.Attributes().PutStr("net.peer.name", "checkout") // bare hostname via legacy attr
+
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(), td))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+	name, ok := attrs.Get(AttrGRPCRouteName)
+	require.True(t, ok, "bare net.peer.name must resolve to a GRPCRoute via resource k8s.namespace.name")
+	assert.Equal(t, "frontend-to-checkout", name.AsString())
+
+	ns, ok := attrs.Get(AttrGRPCRouteNamespace)
+	require.True(t, ok)
+	assert.Equal(t, "otel-demo", ns.AsString())
+}
+
+// backendref_fallback (ISI-802): bare hostname without a resource
+// k8s.namespace.name must remain a no-op — never mis-attribute by guessing.
+func TestBackendRefFallback_BareHostname_NoResourceNamespace_NoStamp(t *testing.T) {
+	lookup := newStaticLookup()
+	lookup.putBackend("otel-demo", "cart", RouteAttributes{
+		Kind: RouteKindHTTPRoute, Name: "cart-route", Namespace: "otel-demo",
+	})
+
+	tp := newTestProcessors(t, lookup, func(c *Config) {
+		c.BackendRefFallback = BackendRefFallback{Enabled: true, SourceAttribute: "server.address"}
+	})
+
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(),
+		// no resource k8s.namespace.name
+		singleSpanWith(map[string]string{"server.address": "cart"}),
+	))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+	_, ok := attrs.Get(AttrHTTPRouteName)
+	assert.False(t, ok, "bare hostname must not stamp when resource k8s.namespace.name is absent")
+}
+
+// backendref_fallback (ISI-802): bare hostname with resource namespace set,
+// but the (ns, svc) pair has no entry in the route index — still a no-op.
+func TestBackendRefFallback_BareHostname_UnknownService_NoStamp(t *testing.T) {
+	tp := newTestProcessors(t, newStaticLookup(), func(c *Config) {
+		c.BackendRefFallback = BackendRefFallback{Enabled: true, SourceAttribute: "server.address"}
+	})
+
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	rs.Resource().Attributes().PutStr("k8s.namespace.name", "otel-demo")
+	ss := rs.ScopeSpans().AppendEmpty()
+	sp := ss.Spans().AppendEmpty()
+	sp.Attributes().PutStr("server.address", "ghost-service")
+
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(), td))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+	_, ok := attrs.Get(AttrHTTPRouteName)
+	assert.False(t, ok)
+	_, ok = attrs.Get(AttrParser)
+	assert.False(t, ok, "no parser should be stamped when nothing matched")
+}
+
 // Resource-level attribute fallback: route_name on resource attrs should still
 // drive enrichment when no record attribute is set. combinedView prefers
 // record over resource.
