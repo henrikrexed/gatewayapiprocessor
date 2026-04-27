@@ -39,6 +39,22 @@ const (
 
 	AttrRawRouteName = "k8s.gatewayapi.raw_route_name"
 	AttrParser       = "k8s.gatewayapi.parser"
+
+	// Policy attachment attributes (ISI-804). Written when a watched policy
+	// CRD's spec.targetRefs[*] points at the matched HTTPRoute or GRPCRoute.
+	//
+	// All four list attributes are element-wise correlated: index `i` of every
+	// list describes the same policy. AttrPolicyTargetKind is scalar because
+	// it always equals the route kind the span was attributed to.
+	//
+	// Per ISI-804 we deliberately do NOT stamp policy.uid — store names + kinds
+	// only so per-span cardinality is bounded by policy count, not policy
+	// generation churn.
+	AttrPolicyNames      = "k8s.gatewayapi.policy.names"
+	AttrPolicyKinds      = "k8s.gatewayapi.policy.kinds"
+	AttrPolicyNamespaces = "k8s.gatewayapi.policy.namespaces"
+	AttrPolicyGroups     = "k8s.gatewayapi.policy.groups"
+	AttrPolicyTargetKind = "k8s.gatewayapi.policy.target_kind"
 )
 
 // RouteMode values for AttrRouteMode.
