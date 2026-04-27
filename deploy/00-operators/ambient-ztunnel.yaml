@@ -3,13 +3,20 @@
 # so `kubectl apply -f` is the only command on stage.
 #
 # The Makefile runs the helm commands before this file is applied; this file
-# carries the NamespacedTelemetry config that turns on waypoint observability.
+# carries the namespace + the cluster-scoped Telemetry CR that tells the
+# ambient dataplane (ztunnel + waypoint) to emit traces, access logs, and
+# metrics through the OpenTelemetry providers wired in
+# `deploy/00-operators/istio-ambient-values.yaml`.
 #
 # To render the helm charts offline:
 #   helm template istio-base oci://gcr.io/istio-release/charts/base --version 1.26.0 \
 #     --namespace istio-system > deploy/00-operators/istio-base-1.26.0.yaml
+#   helm template istiod oci://gcr.io/istio-release/charts/istiod --version 1.26.0 \
+#     --namespace istio-system --set profile=ambient \
+#     -f deploy/00-operators/helm/istio-ambient-values.yaml \
+#     >> deploy/00-operators/istiod-1.26.0.yaml
 #   helm template ztunnel oci://gcr.io/istio-release/charts/ztunnel --version 1.26.0 \
-#     --namespace istio-system --set profile=ambient >> deploy/00-operators/ztunnel-1.26.0.yaml
+#     --namespace istio-system >> deploy/00-operators/ztunnel-1.26.0.yaml
 #
 # Then commit the rendered files and replace this wrapper with direct refs.
 ---
@@ -20,16 +27,32 @@ metadata:
   labels:
     istio.io/rev: default
 ---
+# Cluster-default Telemetry — turns on the three OTel signal types.
+#
+# Provider names (`otelp`, `envoylogs`, `prometheus`) MUST match the
+# `meshConfig.extensionProviders` entries in
+# `deploy/00-operators/istio-ambient-values.yaml`. The Prometheus provider is
+# built-in to istiod and does not need an extensionProviders entry.
 apiVersion: telemetry.istio.io/v1
 kind: Telemetry
 metadata:
   name: default
   namespace: istio-system
 spec:
-  # Surface ambient metrics/traces to the OTel Collector. Waypoint-scoped
-  # metrics are emitted with the k8s.httproute.* / k8s.gateway.* that the
-  # processor normalizes.
+  # Distributed traces — waypoint-scoped spans carrying `k8s.httproute.*` /
+  # `k8s.gateway.*` that the gatewayapiprocessor normalizes.
   tracing:
     - providers:
-        - name: opentelemetry
+        - name: otelp
       randomSamplingPercentage: 100.0
+  # Envoy access logs over OTLP — emitted by the waypoint proxy on every
+  # request, routed to the otel-collector via the envoyOtelAls extension.
+  accessLogging:
+    - providers:
+        - name: envoylogs
+  # Mesh metrics — Prometheus endpoint scraped by the OTel Collector's
+  # prometheus receiver (or merged via the prometheus.istio.io annotations
+  # already injected by the istiod webhook).
+  metrics:
+    - providers:
+        - name: prometheus

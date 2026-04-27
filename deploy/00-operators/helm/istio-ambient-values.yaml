@@ -1,0 +1,54 @@
+# Istio ambient (istiod) Helm values — wires the mesh into the OTel pipeline
+# so ztunnel + waypoint emit traces, access logs, and metrics via OpenTelemetry.
+#
+# Used by the install command in `make steps` (ISI-680 board direction
+# 2026-04-27):
+#
+#   helm install istiod istio/istiod \
+#     --namespace istio-system --set profile=ambient \
+#     -f deploy/00-operators/helm/istio-ambient-values.yaml --wait
+#
+# Reference shape lifted from
+# https://github.com/henrikrexed/servicemeshsecuritybenchmark/blob/v2-gateway-api/istio/ambientmesh/values.yaml
+# and adapted for this repo's collector service location.
+#
+# Collector target:
+#   `deploy/40-collector/collector.yaml` provisions an OpenTelemetryCollector
+#   named `otelcol` in namespace `otel-system`, which the OTel Operator
+#   exposes as Service `otelcol-collector.otel-system.svc.cluster.local`
+#   on port 4317 (OTLP gRPC). Both extension providers below point there.
+#
+# Provider naming matches `deploy/00-operators/ambient-ztunnel.yaml`'s
+# Telemetry CR — `otelp` for tracing, `envoylogs` for access logging.
+
+meshConfig:
+  enableTracing: true
+  enablePrometheusMerge: true
+
+  defaultConfig:
+    tracing:
+      sampling: 100
+
+  defaultProviders:
+    tracing:
+      - "otelp"
+    accessLogging:
+      - "envoylogs"
+
+  extensionProviders:
+    # Envoy access logs → OTel Collector (ALS over OTLP).
+    - name: "envoylogs"
+      envoyOtelAls:
+        service: "otelcol-collector.otel-system.svc.cluster.local"
+        port: 4317
+        logFormat:
+          labels:
+            source: "ENVOY"
+            mesh: "%ENVIRONMENT(ISTIO_META_MESH_ID)%"
+    # Distributed traces → OTel Collector (OTLP gRPC).
+    - name: "otelp"
+      opentelemetry:
+        service: "otelcol-collector.otel-system.svc.cluster.local"
+        port: 4317
+        resource_detectors:
+          environment: {}

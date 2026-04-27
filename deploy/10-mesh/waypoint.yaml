@@ -4,6 +4,24 @@
 # Namespace is `otel-demo` to match `demo-steps §C` (ISI-671).
 # The ambient dataplane mode + use-waypoint labels activate ambient + waypoint
 # interception for every workload in this namespace.
+#
+# Waypoint provider — kgateway (NOT istio-waypoint).
+#
+# Per board direction on ISI-680 (2026-04-27): the demo's waypoint must be
+# served by Kgateway's `kgateway-waypoint` GatewayClass, not Istio's built-in
+# `istio-waypoint`. Reference shape lifted from
+# https://github.com/henrikrexed/servicemeshsecuritybenchmark/blob/v2-gateway-api/kgateway-ambient/waypoint.yaml.
+#
+# This requires the kgateway helm install to enable the waypoint subchart:
+#   helm upgrade ... --set agentgateway.enabled=true --set waypoint.enabled=true
+# (the Makefile `steps` target prints the full command).
+#
+# OneAgent stance — `otel-demo` MUST NOT receive OneAgent code-module
+# injection. Telemetry from this namespace flows OTel SDK → otelcol-agent →
+# otelcol-gateway → Dynatrace OTLP only (see deploy/k8s/dynatrace/dynakube.yaml
+# rationale and the README in that folder). The `dynatrace.com/inject: "false"`
+# annotation below is a belt-and-braces guard on top of the opt-in
+# `oneagent=true` namespaceSelector on the DynaKube CR.
 ---
 apiVersion: v1
 kind: Namespace
@@ -11,22 +29,31 @@ metadata:
   name: otel-demo
   labels:
     istio.io/dataplane-mode: ambient
-    istio.io/use-waypoint: waypoint
+    istio.io/use-waypoint: kgateway-waypoint
+  annotations:
+    # Hard opt-out of Dynatrace OneAgent code-module injection. The DynaKube CR
+    # uses an opt-in `oneagent=true` namespaceSelector; this annotation
+    # additionally instructs the dynatrace-operator webhook to skip injection
+    # even if a future label change accidentally selects this namespace.
+    dynatrace.com/inject: "false"
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: waypoint
+  name: kgateway-waypoint
   namespace: otel-demo
-  annotations:
-    # `service` scope so GAMMA service-as-parentRef routes attach cleanly.
-    istio.io/waypoint-for: service
+  labels:
+    app.kubernetes.io/part-of: opentelemetry-demo
+    # `all` scope so both service-as-parentRef (GAMMA) and pod-attached
+    # workloads route through the waypoint.
+    istio.io/waypoint-for: all
 spec:
   # Waypoint Gateway — NOT the external entrypoint. The ingress is handled by
-  # Kgateway (deploy/10-mesh/kgateway.yaml). This gateway exists so ambient
-  # routes traffic through a waypoint proxy that emits L7 telemetry.
-  gatewayClassName: istio-waypoint
+  # Kgateway (deploy/10-mesh/kgateway.yaml, GatewayClass=kgateway). This gateway
+  # exists so ambient routes traffic through a waypoint proxy that emits L7
+  # telemetry.
+  gatewayClassName: kgateway-waypoint
   listeners:
-    - name: mesh
-      port: 15008
-      protocol: HBONE
+    - name: proxy
+      port: 15088
+      protocol: istio.io/PROXY

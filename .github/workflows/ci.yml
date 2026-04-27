@@ -233,7 +233,9 @@ jobs:
           #
           # Excluded by design:
           #   *.snippet.yaml           — partial config fragments, not k8s objects
-          #   deploy/30-demo/helm/**   — Helm chart values, not k8s objects
+          #   deploy/**/helm/**        — Helm chart values, not k8s objects
+          #                              (e.g. deploy/30-demo/helm/values.yaml,
+          #                              deploy/00-operators/helm/istio-ambient-values.yaml)
           #
           # Skipped kinds:
           #   OpenTelemetryCollector   — CRD allows `spec.config` as either
@@ -243,7 +245,7 @@ jobs:
           #                              time, so we defer to it.
           mapfile -t files < <(find deploy/ -type f \( -name '*.yaml' -o -name '*.yml' \) \
             ! -name '*.snippet.yaml' \
-            ! -path 'deploy/30-demo/helm/*')
+            ! -path 'deploy/*/helm/*')
           echo "Validating ${#files[@]} files:"
           printf '  %s\n' "${files[@]}"
           kubeconform \
