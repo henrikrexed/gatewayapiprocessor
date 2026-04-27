@@ -24,6 +24,92 @@ Informer scoping.
 | --------------- | -------------- | ------- | ------------------------------------------------------------------------------------- |
 | `namespaces`    | list of string | `null`  | Namespaces to watch. `null` or empty means cluster-wide (all namespaces).             |
 | `resync_period` | duration       | `5m`    | Informer resync interval. Must be >= 0. `0` disables periodic resyncs.                |
+| `policies`      | list of [PolicyGVR](#watchpolicies) | `null` | Gateway API policy CRDs to watch via dynamic informers. When unset, no `k8s.gatewayapi.policy.*` attributes are stamped — the processor behaves exactly as it did before [ISI-804](https://paperclip.isitobservable.com/ISI/issues/ISI-804). |
+
+### watch.policies
+
+Each entry identifies one CRD by its dynamic `(group, version, resource)`
+coordinates. The processor builds one shared dynamic informer per entry and
+projects every policy whose `spec.targetRefs[]` points at an HTTPRoute or
+GRPCRoute (in the `gateway.networking.k8s.io` group) onto the matched route.
+
+| Key        | Type   | Required | Description                                                                  |
+| ---------- | ------ | -------- | ---------------------------------------------------------------------------- |
+| `group`    | string | yes      | API group of the policy CRD (`gateway.kgateway.dev`, `gateway.envoyproxy.io`, …). May be empty for the core API. |
+| `version`  | string | yes      | API version (`v1alpha1`, `v1alpha2`, `v1`, …).                              |
+| `resource` | string | yes      | Plural resource name (`trafficpolicies`, `backendconfigpolicies`, …).      |
+
+**Acceptance gate.** A policy is stamped onto its matched routes only when
+either:
+
+- `status.conditions[type=Accepted, status=True]` (kgateway-style,
+  inherited-attachment shape), or
+- any `status.ancestors[*].conditions[type=Accepted, status=True]` (the
+  GEP-2648 direct-attachment shape used by Envoy Gateway and others), or
+- the CR has no `status` block at all (newly created, not yet reconciled —
+  optimistic accept so policies enrich during the controller's reconcile
+  window). Once the controller writes a status, the real conditions take
+  over.
+
+Otherwise the policy is skipped. A policy that flips from `Accepted=True` to
+`Accepted=False` has its prior stamps withdrawn from the index.
+
+**Out-of-scope target refs are skipped silently.** A `targetRef` whose `kind`
+is anything other than `HTTPRoute` or `GRPCRoute`, or whose `group` is not
+`gateway.networking.k8s.io`, is not enriched. The processor does not stamp
+policies onto Gateways, Services, or other route kinds.
+
+**Stamped attributes.** When at least one accepted policy targets the
+matched route, the following parallel array attributes are stamped on every
+span/log/metric (subject to `enrich.{traces,logs,metrics}` and
+`enrich.exclude_from_metric_attributes`):
+
+| Attribute                          | Type            | Description                                                                |
+| ---------------------------------- | --------------- | -------------------------------------------------------------------------- |
+| `k8s.gatewayapi.policy.names`      | `[]string`      | Policy names, one element per attached policy.                             |
+| `k8s.gatewayapi.policy.kinds`      | `[]string`      | Policy CRD kinds (e.g. `TrafficPolicy`, `BackendConfigPolicy`).            |
+| `k8s.gatewayapi.policy.namespaces` | `[]string`      | Namespaces of the attached policies.                                       |
+| `k8s.gatewayapi.policy.groups`     | `[]string`      | API groups of the policy CRDs.                                             |
+| `k8s.gatewayapi.policy.target_kind`| `string`        | `HTTPRoute` or `GRPCRoute` — mirrors the matched route kind.               |
+
+The four list attributes are **element-wise correlated**: index `i` of every
+list describes the same policy. Dashboards can group by
+`policy.kinds[i]` and select the matching `policy.names[i]`.
+
+There is **no** `policy.uid` attribute by deliberate decision
+([ISI-804](https://paperclip.isitobservable.com/ISI/issues/ISI-804)) — keeping
+per-span cardinality bounded by policy count, not generation churn. If the
+policy attribute set is too cardinal for your metric pipeline, add the four
+list attribute keys to `enrich.exclude_from_metric_attributes`; traces and
+logs continue to carry the full attribution.
+
+**Example.** Watching kgateway's `TrafficPolicy` and `BackendConfigPolicy`:
+
+```yaml
+processors:
+  gatewayapi:
+    watch:
+      namespaces: [otel-demo]
+      policies:
+        - group: gateway.kgateway.dev
+          version: v1alpha1
+          resource: trafficpolicies
+        - group: gateway.kgateway.dev
+          version: v1alpha1
+          resource: backendconfigpolicies
+```
+
+When a `TrafficPolicy` named `rate-limit-frontend` in `otel-demo`
+references an HTTPRoute via `spec.targetRefs[]`, every span on that route
+is stamped with:
+
+```
+k8s.gatewayapi.policy.names       = ["rate-limit-frontend"]
+k8s.gatewayapi.policy.kinds       = ["TrafficPolicy"]
+k8s.gatewayapi.policy.namespaces  = ["otel-demo"]
+k8s.gatewayapi.policy.groups      = ["gateway.kgateway.dev"]
+k8s.gatewayapi.policy.target_kind = "HTTPRoute"
+```
 
 ## parsers
 
@@ -85,6 +171,8 @@ Enforced by `Config.Validate()` at component startup:
 - For `name: envoy`, if `format_regex` is set it must compile and **must
   define named groups `ns` and `name`**.
 - `watch.resync_period` and `informer_sync_timeout` must be >= 0.
+- Every `watch.policies[*]` entry must declare both `version` and `resource`
+  (`group` may be empty for core-API CRDs).
 
 ## Defaults
 

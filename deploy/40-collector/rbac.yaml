@@ -40,6 +40,21 @@ rules:
       - httproutes/status
       - grpcroutes/status
     verbs: ["get", "list", "watch"]
+  # Policy attachment enrichment (ISI-804). The dynamic informer reads each
+  # configured policy CRD; spec.targetRefs[] is projected onto the route
+  # index. /status reads are also list/watched so the Accepted=True gate
+  # works (mirrors the route-status pattern above). Additional CRDs go here
+  # as `watch.policies` grows — keep the verbs list/watch only, never
+  # create/update/delete.
+  - apiGroups: ["gateway.kgateway.dev"]
+    resources:
+      - trafficpolicies
+      - trafficpolicies/status
+      - backendconfigpolicies
+      - backendconfigpolicies/status
+      - httplistenerpolicies
+      - httplistenerpolicies/status
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
