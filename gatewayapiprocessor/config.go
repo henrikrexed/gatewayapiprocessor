@@ -37,6 +37,25 @@ type Config struct {
 type WatchConfig struct {
 	Namespaces   []string      `mapstructure:"namespaces"`
 	ResyncPeriod time.Duration `mapstructure:"resync_period"`
+
+	// Policies enumerates the Gateway API policy CRDs to watch via dynamic
+	// informers. Each entry stamps k8s.gatewayapi.policy.* attributes on every
+	// span/log/metric whose route matches policy.spec.targetRefs[*]. Empty
+	// disables policy enrichment — the processor still works exactly as
+	// before. The default zero-config policy set is intentionally empty so we
+	// never auto-watch CRDs the user didn't ask for; populate this from your
+	// collector config when policy attachment exists in the cluster.
+	Policies []PolicyGVR `mapstructure:"policies"`
+}
+
+// PolicyGVR identifies a Gateway API policy CRD by its dynamic
+// (group, version, resource) coordinates. The processor builds one dynamic
+// informer per entry. We use GVR (not GVK) so the informer factory can look
+// up the resource directly without a discovery round-trip.
+type PolicyGVR struct {
+	Group    string `mapstructure:"group"`
+	Version  string `mapstructure:"version"`
+	Resource string `mapstructure:"resource"`
 }
 
 // ParserConfig is a single entry in the parser plug-in chain.
@@ -178,6 +197,12 @@ func (c *Config) Validate() error {
 
 	if c.InformerSyncTimeout < 0 {
 		return fmt.Errorf("gatewayapiprocessor: informer_sync_timeout must be >= 0")
+	}
+
+	for i, p := range c.Watch.Policies {
+		if p.Version == "" || p.Resource == "" {
+			return fmt.Errorf("gatewayapiprocessor: watch.policies[%d] requires version and resource (group may be empty for core API)", i)
+		}
 	}
 
 	return nil

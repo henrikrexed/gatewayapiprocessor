@@ -75,6 +75,15 @@ func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLo
 		f.Start(ctx.Done())
 	}
 
+	// Policy informers (ISI-804). Only fires when cfg.Watch.Policies is
+	// configured; routes & enrichment continue to work unchanged for users
+	// who haven't opted in.
+	policyInformers, err := startPolicyInformers(ctx, logger, restCfg, cfg, index)
+	if err != nil {
+		return nil, nil, fmt.Errorf("start policy informers: %w", err)
+	}
+	informers = append(informers, policyInformers...)
+
 	syncCtx, cancel := context.WithTimeout(ctx, defaultSyncTimeout(cfg.InformerSyncTimeout))
 	defer cancel()
 	for _, inf := range informers {

@@ -34,6 +34,25 @@ type RouteAttributes struct {
 	// Mesh-mode parent Service (GAMMA). Populated only when RouteMode == "mesh".
 	ParentServiceName      string
 	ParentServiceNamespace string
+
+	// Policies holds Gateway API policy references whose targetRefs[*]
+	// point at this route. Populated by the policy informer (see
+	// policy_informer.go) and read by stampRouteAttrs to write the
+	// k8s.gatewayapi.policy.{names,kinds,namespaces,groups} array
+	// attributes. Order is informer-discovery order; tests assert
+	// ordering-stable output.
+	Policies []PolicyRef
+}
+
+// PolicyRef is a single Gateway API policy attached to a route. Mirrors the
+// fields of a CRD object reference minus the UID — Henrik's direction on
+// ISI-804 was that we store the policy by name + CRD kind only, no UID, so
+// per-span cardinality stays bounded by policy count.
+type PolicyRef struct {
+	Name      string
+	Namespace string
+	Kind      string
+	Group     string
 }
 
 // RouteKind enumerates the CR kinds the processor enriches from.

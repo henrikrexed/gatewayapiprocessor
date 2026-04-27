@@ -167,6 +167,22 @@ subjects:
 
 `GatewayClass` is a cluster-scoped resource, so when `watch.namespaces` is set the processor skips the GatewayClass informer and the `gatewayclasses` verb is intentionally absent above. `k8sattributesprocessor` (pods/namespaces/nodes/replicasets/...) still needs its own `ClusterRole` — that scope is set by `k8sattributes`, not by this processor.
 
+## Optional features
+
+### Policy attachment enrichment ([ISI-804](https://paperclip.isitobservable.com/ISI/issues/ISI-804))
+
+When `watch.policies` is configured, the processor watches Gateway API policy attachment CRDs (kgateway `TrafficPolicy`, Envoy Gateway `BackendTrafficPolicy`, etc.) via dynamic informers and stamps the matched policies onto every span/log/metric whose route matches. Spans on a route with one rate-limit policy and one retry policy attached carry parallel arrays:
+
+```
+k8s.gatewayapi.policy.names       = ["rate-limit-frontend", "retries-frontend"]
+k8s.gatewayapi.policy.kinds       = ["TrafficPolicy", "TrafficPolicy"]
+k8s.gatewayapi.policy.namespaces  = ["otel-demo", "otel-demo"]
+k8s.gatewayapi.policy.groups      = ["gateway.kgateway.dev", "gateway.kgateway.dev"]
+k8s.gatewayapi.policy.target_kind = "HTTPRoute"
+```
+
+Index `i` of each list describes the same policy. Vendor-neutral by design — list any CRD that follows the Gateway API policy attachment shape (`spec.targetRefs[]`) under `watch.policies`. Empty `watch.policies` disables the feature; the processor behaves exactly as it did before. See [`docs/configuration.md` § watch.policies](./docs/configuration.md#watchpolicies) for the full attribute contract, acceptance gate (Accepted=True or no-status optimism), and example config; the demo manifest lives at [`deploy/10-mesh/policies/kgateway-trafficpolicy.yaml`](./deploy/10-mesh/policies/kgateway-trafficpolicy.yaml). RBAC for the additional CRDs is in [`deploy/40-collector/rbac.yaml`](./deploy/40-collector/rbac.yaml). When this feature is enabled, the policy CRDs become cluster requirements ([ISI-803](https://paperclip.isitobservable.com/ISI/issues/ISI-803)).
+
 ## Processor self-telemetry
 
 The processor emits its own OTel metrics via `processor.Settings.TelemetrySettings` (FR-7, [ISI-688](https://paperclip.isitobservable.com/ISI/issues/ISI-688)). The instrument types are load-bearing for the processor-internal Grafana dashboard — Grafana queries must match the instrument shape or the panels read empty.

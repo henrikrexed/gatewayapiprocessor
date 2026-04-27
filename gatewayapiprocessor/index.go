@@ -28,6 +28,14 @@ type routeIndex struct {
 	// claimedBackends records which (ns/service) keys already have an owner,
 	// so we can detect ambiguity on subsequent updates.
 	claimedBackends map[string]string // key -> "<kind>|<ns>/<name>" owner
+
+	// policies maps a route key to the deduplicated PolicyRefs whose
+	// CRD spec.targetRefs[*] points at it. Lives separately from `routes`
+	// so route lifecycle (informer add/update/delete) and policy lifecycle
+	// (a different informer) don't fight for the same write. LookupRoute
+	// merges policies into the returned RouteAttributes value at read time.
+	// Key = "<kind>|<ns>/<name>".
+	policies map[string][]PolicyRef
 }
 
 func newRouteIndex() *routeIndex {
@@ -35,6 +43,7 @@ func newRouteIndex() *routeIndex {
 		routes:          make(map[string]RouteAttributes),
 		backendIndex:    make(map[string]RouteAttributes),
 		claimedBackends: make(map[string]string),
+		policies:        make(map[string][]PolicyRef),
 	}
 }
 
@@ -42,8 +51,13 @@ func newRouteIndex() *routeIndex {
 func (r *routeIndex) LookupRoute(kind RouteKind, ns, name string) (RouteAttributes, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	ra, ok := r.routes[routeKey(kind, ns, name)]
-	return ra, ok
+	key := routeKey(kind, ns, name)
+	ra, ok := r.routes[key]
+	if !ok {
+		return ra, false
+	}
+	r.overlayPoliciesLocked(key, &ra)
+	return ra, true
 }
 
 // LookupByBackendService satisfies RouteLookup.
@@ -51,7 +65,68 @@ func (r *routeIndex) LookupByBackendService(ns, svc string) (RouteAttributes, bo
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	ra, ok := r.backendIndex[ns+"/"+svc]
-	return ra, ok
+	if !ok {
+		return ra, false
+	}
+	r.overlayPoliciesLocked(routeKey(ra.Kind, ra.Namespace, ra.Name), &ra)
+	return ra, true
+}
+
+// overlayPoliciesLocked attaches the current policy snapshot for the given
+// route key onto ra.Policies. Caller MUST hold r.mu (read or write). The
+// overlay is a defensive copy so callers can mutate the returned slice
+// without racing other readers — the index map is the source of truth.
+func (r *routeIndex) overlayPoliciesLocked(key string, ra *RouteAttributes) {
+	pols := r.policies[key]
+	if len(pols) == 0 {
+		return
+	}
+	ra.Policies = append([]PolicyRef(nil), pols...)
+}
+
+// applyPolicy records that a Gateway API policy CRD's spec.targetRefs[*]
+// points at the route identified by (kind, ns, name). Idempotent: if an
+// equivalent PolicyRef already exists for this route, the call is a no-op.
+//
+// Called from the dynamic policy informer's Add/Update handlers; safe to call
+// before the matched route has been ingested by the route informer (the
+// policy ref simply waits in the index until the route appears).
+func (r *routeIndex) applyPolicy(kind RouteKind, ns, name string, p PolicyRef) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := routeKey(kind, ns, name)
+	for _, existing := range r.policies[key] {
+		if policyRefsEqual(existing, p) {
+			return
+		}
+	}
+	r.policies[key] = append(r.policies[key], p)
+}
+
+// removePolicy drops a previously-applied PolicyRef from the route. Called
+// from the dynamic policy informer's Update (for targets that disappeared
+// between revisions) and Delete handlers. Last-policy removal also clears the
+// per-route entry so memory does not leak after a fully-detached policy.
+func (r *routeIndex) removePolicy(kind RouteKind, ns, name string, p PolicyRef) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := routeKey(kind, ns, name)
+	pols := r.policies[key]
+	for i, existing := range pols {
+		if policyRefsEqual(existing, p) {
+			r.policies[key] = append(pols[:i], pols[i+1:]...)
+			if len(r.policies[key]) == 0 {
+				delete(r.policies, key)
+			}
+			return
+		}
+	}
+}
+
+// policyRefsEqual compares two refs by their identity tuple. UID is
+// deliberately not part of the tuple — see ISI-804.
+func policyRefsEqual(a, b PolicyRef) bool {
+	return a.Name == b.Name && a.Namespace == b.Namespace && a.Kind == b.Kind && a.Group == b.Group
 }
 
 // upsertHTTPRoute applies a full RouteAttributes + backendRef list from a

@@ -1,0 +1,100 @@
+# kgateway TrafficPolicy attachment demo (ISI-804).
+#
+# These policies attach to existing demo HTTPRoute/GRPCRoute objects via
+# spec.targetRefs[]. The collector's gatewayapiprocessor watches them through
+# the dynamic policy informer wired up in ISI-804 and stamps every matched
+# span/log/metric with parallel arrays:
+#
+#   k8s.gatewayapi.policy.names       = ["rate-limit-frontend"]
+#   k8s.gatewayapi.policy.kinds       = ["TrafficPolicy"]
+#   k8s.gatewayapi.policy.namespaces  = ["otel-demo"]
+#   k8s.gatewayapi.policy.groups      = ["gateway.kgateway.dev"]
+#   k8s.gatewayapi.policy.target_kind = "HTTPRoute"
+#
+# When two policies target the same route, the arrays grow to length 2 with
+# element-wise correlated entries — index i of every list describes the same
+# policy. This is the contract Henrik approved on ISI-804 (2026-04-27): no
+# policy.uid, just name + CRD identity, low cardinality, queryable.
+#
+# Talk demo beat: apply this manifest mid-talk, refresh Grail, watch the
+# policy attribution surface on hero spans without restarting the collector.
+#
+# References:
+#   - kgateway.dev/docs/concepts/traffic-management/trafficpolicy/
+#   - gateway-api.sigs.k8s.io/reference/policy-attachment/
+#   - ISI-804: https://paperclip.isitobservable.com/ISI/issues/ISI-804
+
+# ---------------------------------------------------------------------------
+# Policy 1 — rate limit on the ingress HTTPRoute `api`.
+# Stamps every span on /api/* with the policy attribution.
+---
+apiVersion: gateway.kgateway.dev/v1alpha1
+kind: TrafficPolicy
+metadata:
+  name: rate-limit-frontend
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/part-of: otel-demo
+    demo.isitobservable.com/policy-kind: ratelimit
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: api
+  rateLimit:
+    local:
+      tokenBucket:
+        # 50 req/s, burst 100. Visible in Grail as 429s on the
+        # frontend-to-cart spans plus the new policy.* attribution.
+        maxTokens: 100
+        tokensPerFill: 50
+        fillInterval: 1s
+
+# ---------------------------------------------------------------------------
+# Policy 2 — retry policy on the same HTTPRoute `api`. Demonstrates the
+# multi-policy stamp: arrays length 2 with element-wise correlated entries.
+---
+apiVersion: gateway.kgateway.dev/v1alpha1
+kind: TrafficPolicy
+metadata:
+  name: retries-frontend
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/part-of: otel-demo
+    demo.isitobservable.com/policy-kind: retry
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: api
+  retry:
+    attempts: 3
+    perTryTimeout: 2s
+    retryOn:
+      - 5xx
+      - reset
+
+# ---------------------------------------------------------------------------
+# Policy 3 — rate limit on the GRPCRoute `cart`. Confirms the
+# k8s.gatewayapi.policy.target_kind attribute toggles to "GRPCRoute" when
+# the matched route is a GRPCRoute.
+---
+apiVersion: gateway.kgateway.dev/v1alpha1
+kind: TrafficPolicy
+metadata:
+  name: rate-limit-cart-grpc
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/part-of: otel-demo
+    demo.isitobservable.com/policy-kind: ratelimit
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: GRPCRoute
+      name: cart
+  rateLimit:
+    local:
+      tokenBucket:
+        maxTokens: 50
+        tokensPerFill: 25
+        fillInterval: 1s

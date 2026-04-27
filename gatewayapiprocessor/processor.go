@@ -382,6 +382,39 @@ func (p *gatewayAPIProcessor) stampRouteAttrs(attrs pcommon.Map, ra RouteAttribu
 	if ra.ParentServiceNamespace != "" {
 		putString(attrs, AttrParentServiceNamespace, ra.ParentServiceNamespace)
 	}
+
+	stampPolicyAttrs(attrs, ra)
+}
+
+// stampPolicyAttrs writes the k8s.gatewayapi.policy.* array attributes when
+// at least one Gateway API policy targets the matched route. ISI-804 contract:
+//
+//   - names/kinds/namespaces/groups are parallel arrays — index i of every
+//     array describes the same policy.
+//   - target_kind is a scalar that mirrors the matched route kind.
+//   - No policy.uid by deliberate decision (Henrik 2026-04-27): keep
+//     per-span cardinality bounded by policy count, not generation churn.
+//   - Empty Policies slice → no stamp (clean omission for routes with no
+//     attached policy).
+func stampPolicyAttrs(attrs pcommon.Map, ra RouteAttributes) {
+	if len(ra.Policies) == 0 {
+		return
+	}
+	names := attrs.PutEmptySlice(AttrPolicyNames)
+	kinds := attrs.PutEmptySlice(AttrPolicyKinds)
+	namespaces := attrs.PutEmptySlice(AttrPolicyNamespaces)
+	groups := attrs.PutEmptySlice(AttrPolicyGroups)
+	for _, p := range ra.Policies {
+		names.AppendEmpty().SetStr(p.Name)
+		kinds.AppendEmpty().SetStr(p.Kind)
+		namespaces.AppendEmpty().SetStr(p.Namespace)
+		groups.AppendEmpty().SetStr(p.Group)
+	}
+	targetKind := "HTTPRoute"
+	if ra.Kind == RouteKindGRPCRoute {
+		targetKind = "GRPCRoute"
+	}
+	putString(attrs, AttrPolicyTargetKind, targetKind)
 }
 
 // resourceAttrK8sNamespace is the OTel semantic convention key carrying the

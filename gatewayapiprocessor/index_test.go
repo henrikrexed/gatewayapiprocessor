@@ -179,6 +179,125 @@ func TestBackendRefsFromHTTPRoute_FiltersNonServiceAndDefaultsNamespace(t *testi
 	assert.Contains(t, refs, backendRef{Namespace: "other", Name: "cross-svc"})
 }
 
+// ---- Policy attachment index (ISI-804) ----
+
+func TestRouteIndex_ApplyPolicy_OverlaysOnLookup(t *testing.T) {
+	idx := newRouteIndex()
+	idx.upsertHTTPRoute(RouteAttributes{
+		Kind: RouteKindHTTPRoute, Name: "api", Namespace: "demo", UID: "uid-api",
+	}, nil)
+
+	idx.applyPolicy(RouteKindHTTPRoute, "demo", "api", PolicyRef{
+		Name: "rate-limit", Namespace: "demo", Kind: "TrafficPolicy", Group: "gateway.kgateway.dev",
+	})
+
+	ra, ok := idx.LookupRoute(RouteKindHTTPRoute, "demo", "api")
+	require.True(t, ok)
+	require.Len(t, ra.Policies, 1)
+	assert.Equal(t, "rate-limit", ra.Policies[0].Name)
+	assert.Equal(t, "TrafficPolicy", ra.Policies[0].Kind)
+}
+
+func TestRouteIndex_ApplyPolicy_IsIdempotent(t *testing.T) {
+	idx := newRouteIndex()
+	idx.upsertHTTPRoute(RouteAttributes{
+		Kind: RouteKindHTTPRoute, Name: "api", Namespace: "demo", UID: "uid",
+	}, nil)
+	p := PolicyRef{Name: "rl", Namespace: "demo", Kind: "TrafficPolicy", Group: "gateway.kgateway.dev"}
+
+	idx.applyPolicy(RouteKindHTTPRoute, "demo", "api", p)
+	idx.applyPolicy(RouteKindHTTPRoute, "demo", "api", p)
+	idx.applyPolicy(RouteKindHTTPRoute, "demo", "api", p)
+
+	ra, _ := idx.LookupRoute(RouteKindHTTPRoute, "demo", "api")
+	assert.Len(t, ra.Policies, 1, "duplicate applyPolicy calls must dedupe")
+}
+
+func TestRouteIndex_ApplyPolicy_BeforeRouteExists(t *testing.T) {
+	// The policy informer often races ahead of the route informer. The index
+	// must accept the PolicyRef even when the matched route is unknown so that
+	// the later route upsert sees the policies on first lookup.
+	idx := newRouteIndex()
+	idx.applyPolicy(RouteKindHTTPRoute, "demo", "api", PolicyRef{
+		Name: "rl", Namespace: "demo", Kind: "TrafficPolicy", Group: "gateway.kgateway.dev",
+	})
+
+	_, ok := idx.LookupRoute(RouteKindHTTPRoute, "demo", "api")
+	require.False(t, ok, "lookup must return false until the route exists")
+
+	idx.upsertHTTPRoute(RouteAttributes{
+		Kind: RouteKindHTTPRoute, Name: "api", Namespace: "demo", UID: "uid",
+	}, nil)
+
+	ra, ok := idx.LookupRoute(RouteKindHTTPRoute, "demo", "api")
+	require.True(t, ok)
+	require.Len(t, ra.Policies, 1, "policy applied before route must surface on later lookup")
+}
+
+func TestRouteIndex_RemovePolicy_DropsAndCleansEmptyEntries(t *testing.T) {
+	idx := newRouteIndex()
+	idx.upsertHTTPRoute(RouteAttributes{
+		Kind: RouteKindHTTPRoute, Name: "api", Namespace: "demo", UID: "uid",
+	}, nil)
+	a := PolicyRef{Name: "a", Namespace: "demo", Kind: "TrafficPolicy", Group: "gateway.kgateway.dev"}
+	b := PolicyRef{Name: "b", Namespace: "demo", Kind: "BackendConfigPolicy", Group: "gateway.kgateway.dev"}
+	idx.applyPolicy(RouteKindHTTPRoute, "demo", "api", a)
+	idx.applyPolicy(RouteKindHTTPRoute, "demo", "api", b)
+
+	idx.removePolicy(RouteKindHTTPRoute, "demo", "api", a)
+	ra, _ := idx.LookupRoute(RouteKindHTTPRoute, "demo", "api")
+	require.Len(t, ra.Policies, 1)
+	assert.Equal(t, "b", ra.Policies[0].Name)
+
+	idx.removePolicy(RouteKindHTTPRoute, "demo", "api", b)
+	ra, _ = idx.LookupRoute(RouteKindHTTPRoute, "demo", "api")
+	assert.Empty(t, ra.Policies)
+
+	// Internal cleanup: when the last policy is removed, the per-route entry
+	// must be deleted so a long-running collector with high policy churn
+	// doesn't leak map entries.
+	idx.mu.RLock()
+	_, has := idx.policies[routeKey(RouteKindHTTPRoute, "demo", "api")]
+	idx.mu.RUnlock()
+	assert.False(t, has, "policies map must drop empty per-route entries")
+}
+
+func TestRouteIndex_PolicyOverlay_DefensivelyCopies(t *testing.T) {
+	// A caller mutating the returned slice must NOT corrupt the index.
+	idx := newRouteIndex()
+	idx.upsertHTTPRoute(RouteAttributes{
+		Kind: RouteKindHTTPRoute, Name: "api", Namespace: "demo", UID: "uid",
+	}, nil)
+	idx.applyPolicy(RouteKindHTTPRoute, "demo", "api", PolicyRef{
+		Name: "a", Namespace: "demo", Kind: "TrafficPolicy", Group: "gateway.kgateway.dev",
+	})
+
+	ra1, _ := idx.LookupRoute(RouteKindHTTPRoute, "demo", "api")
+	require.Len(t, ra1.Policies, 1)
+	ra1.Policies[0].Name = "MUTATED"
+
+	ra2, _ := idx.LookupRoute(RouteKindHTTPRoute, "demo", "api")
+	require.Len(t, ra2.Policies, 1)
+	assert.Equal(t, "a", ra2.Policies[0].Name, "lookup overlay must not alias the index storage")
+}
+
+func TestRouteIndex_PolicyOverlay_BackendServiceLookup(t *testing.T) {
+	// The backendref_fallback path must also see attached policies — the demo's
+	// GAMMA gRPC spans resolve via this path.
+	idx := newRouteIndex()
+	idx.upsertGRPCRoute(RouteAttributes{
+		Kind: RouteKindGRPCRoute, Name: "checkout", Namespace: "demo", UID: "uid-checkout",
+	}, []backendRef{{Namespace: "demo", Name: "checkout-svc"}})
+	idx.applyPolicy(RouteKindGRPCRoute, "demo", "checkout", PolicyRef{
+		Name: "rl", Namespace: "demo", Kind: "TrafficPolicy", Group: "gateway.kgateway.dev",
+	})
+
+	ra, ok := idx.LookupByBackendService("demo", "checkout-svc")
+	require.True(t, ok)
+	require.Len(t, ra.Policies, 1)
+	assert.Equal(t, "rl", ra.Policies[0].Name)
+}
+
 // Concurrent upsert / lookup / delete must not race. Go's race detector asserts
 // this — the RWMutex in routeIndex is the only guarantee.
 func TestRouteIndex_ConcurrentAccess_NoRaces(t *testing.T) {
