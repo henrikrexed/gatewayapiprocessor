@@ -80,7 +80,18 @@ func createDefaultConfig() component.Config {
 			// Walk both modern (1.20+ sem-conv) and legacy span attribute
 			// names so auto-instrumentation that hasn't migrated still
 			// resolves. processor-spec §1.3.
-			SourceAttributes: []string{"server.address", "net.peer.name"},
+			//
+			// Order matters — the first non-empty key whose host resolves
+			// wins. Modern sem-conv first, then legacy URL/host attributes
+			// for older SDKs (e.g. Python/Envoy that still emit http.url
+			// only). ISI-802 follow-up.
+			SourceAttributes: []string{
+				"server.address",
+				"net.peer.name",
+				"http.host",
+				"url.full",
+				"http.url",
+			},
 		},
 		InformerSyncTimeout: 30 * time.Second,
 	}

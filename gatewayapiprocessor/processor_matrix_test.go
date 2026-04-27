@@ -445,7 +445,149 @@ func TestBackendRefFallback_BareHostname_NoResourceNamespace_NoStamp(t *testing.
 	assert.False(t, ok, "bare hostname must not stamp when resource k8s.namespace.name is absent")
 }
 
-// backendref_fallback (ISI-802): bare hostname with resource namespace set,
+// backendref_fallback (ISI-802 follow-up): legacy SDKs (Python requests, Envoy
+// access logs, etc.) emit http.url instead of server.address. The default
+// SourceAttributes walk now includes http.url; the URL host gets parsed and
+// the bare-hostname path qualifies it via resource k8s.namespace.name.
+func TestBackendRefFallback_HTTPURL_WithBareHost(t *testing.T) {
+	lookup := newStaticLookup()
+	lookup.putBackend("otel-demo", "frontend-proxy", RouteAttributes{
+		Kind: RouteKindHTTPRoute, Name: "frontend-proxy-mesh", Namespace: "otel-demo", UID: "uid-frontend-proxy",
+	})
+
+	tp := newTestProcessors(t, lookup, nil) // default config — uses extended SourceAttributes
+
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	rs.Resource().Attributes().PutStr("k8s.namespace.name", "otel-demo")
+	ss := rs.ScopeSpans().AppendEmpty()
+	sp := ss.Spans().AppendEmpty()
+	sp.Attributes().PutStr("http.url", "http://frontend-proxy:8080/api/checkout")
+
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(), td))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+	name, ok := attrs.Get(AttrHTTPRouteName)
+	require.True(t, ok, "http.url with bare host must resolve via resource k8s.namespace.name")
+	assert.Equal(t, "frontend-proxy-mesh", name.AsString())
+
+	parser, ok := attrs.Get(AttrParser)
+	require.True(t, ok)
+	assert.Equal(t, "backendref_fallback", parser.AsString())
+}
+
+// backendref_fallback (ISI-802 follow-up): http.host carries host[:port]; we
+// strip the port and run the same bare-hostname or FQDN match.
+func TestBackendRefFallback_HTTPHost_PortStripped(t *testing.T) {
+	lookup := newStaticLookup()
+	lookup.putBackend("otel-demo", "frontend-proxy", RouteAttributes{
+		Kind: RouteKindHTTPRoute, Name: "frontend-proxy-mesh", Namespace: "otel-demo",
+	})
+
+	tp := newTestProcessors(t, lookup, nil)
+
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	rs.Resource().Attributes().PutStr("k8s.namespace.name", "otel-demo")
+	ss := rs.ScopeSpans().AppendEmpty()
+	sp := ss.Spans().AppendEmpty()
+	sp.Attributes().PutStr("http.host", "frontend-proxy:8080") // legacy attr with port
+
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(), td))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+	name, ok := attrs.Get(AttrHTTPRouteName)
+	require.True(t, ok, "http.host:port must resolve after port-strip")
+	assert.Equal(t, "frontend-proxy-mesh", name.AsString())
+}
+
+// backendref_fallback (ISI-802 follow-up): url.full is the modern equivalent
+// of http.url and must resolve via the same URL-parse path.
+func TestBackendRefFallback_URLFull_FQDN(t *testing.T) {
+	lookup := newStaticLookup()
+	lookup.putBackend("demo", "api-service", RouteAttributes{
+		Kind: RouteKindHTTPRoute, Name: "api-route", Namespace: "demo",
+	})
+
+	tp := newTestProcessors(t, lookup, nil)
+
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(),
+		singleSpanWith(map[string]string{
+			"url.full": "https://api-service.demo.svc.cluster.local:8443/v1/orders?id=42",
+		}),
+	))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+	name, ok := attrs.Get(AttrHTTPRouteName)
+	require.True(t, ok)
+	assert.Equal(t, "api-route", name.AsString())
+}
+
+// backendref_fallback (ISI-802 follow-up): server.address that mistakenly
+// includes a port (against sem-conv) is still resolved via port-strip.
+func TestBackendRefFallback_ServerAddress_PortStripped(t *testing.T) {
+	lookup := newStaticLookup()
+	lookup.putBackend("otel-demo", "cart", RouteAttributes{
+		Kind: RouteKindGRPCRoute, Name: "frontend-to-cart", Namespace: "otel-demo",
+	})
+
+	tp := newTestProcessors(t, lookup, nil)
+
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	rs.Resource().Attributes().PutStr("k8s.namespace.name", "otel-demo")
+	ss := rs.ScopeSpans().AppendEmpty()
+	sp := ss.Spans().AppendEmpty()
+	sp.Attributes().PutStr("server.address", "cart:8080")
+
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(), td))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+	name, ok := attrs.Get(AttrGRPCRouteName)
+	require.True(t, ok)
+	assert.Equal(t, "frontend-to-cart", name.AsString())
+}
+
+// backendref_fallback (ISI-802 follow-up): malformed http.url must remain a
+// no-op — never crash, never mis-attribute.
+func TestBackendRefFallback_HTTPURL_Malformed_NoStamp(t *testing.T) {
+	lookup := newStaticLookup()
+	lookup.putBackend("otel-demo", "frontend-proxy", RouteAttributes{
+		Kind: RouteKindHTTPRoute, Name: "frontend-proxy-mesh", Namespace: "otel-demo",
+	})
+
+	tp := newTestProcessors(t, lookup, nil)
+
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	rs.Resource().Attributes().PutStr("k8s.namespace.name", "otel-demo")
+	ss := rs.ScopeSpans().AppendEmpty()
+	sp := ss.Spans().AppendEmpty()
+	sp.Attributes().PutStr("http.url", "not a url at all")
+
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(), td))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+	_, ok := attrs.Get(AttrHTTPRouteName)
+	assert.False(t, ok, "malformed http.url must not stamp")
+}
+
+// backendref_fallback (ISI-802 follow-up): IPv6 in URL form must NOT be
+// mis-stripped to look like a bare hostname — splitAddress already returns
+// empty for these and we keep that contract.
+func TestBackendRefFallback_IPv6Host_NoStamp(t *testing.T) {
+	tp := newTestProcessors(t, newStaticLookup(), nil)
+
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(),
+		singleSpanWith(map[string]string{"http.url": "http://[fd00::1]:8080/api"}),
+	))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+	_, ok := attrs.Get(AttrHTTPRouteName)
+	assert.False(t, ok, "IPv6 host must not mis-attribute")
+}
+
+// backendref_fallback (ISI-802 follow-up): bare hostname with resource namespace set,
 // but the (ns, svc) pair has no entry in the route index — still a no-op.
 func TestBackendRefFallback_BareHostname_UnknownService_NoStamp(t *testing.T) {
 	tp := newTestProcessors(t, newStaticLookup(), func(c *Config) {

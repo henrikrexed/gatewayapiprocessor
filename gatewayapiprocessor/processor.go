@@ -3,6 +3,7 @@ package gatewayapiprocessor
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"go.opentelemetry.io/collector/component"
@@ -405,8 +406,12 @@ func (p *gatewayAPIProcessor) applyBackendRefFallback(view combinedView, recordA
 	var ra RouteAttributes
 	var matched bool
 	for _, key := range keys {
-		addr, ok := view.Get(key)
-		if !ok || addr == "" {
+		raw, ok := view.Get(key)
+		if !ok || raw == "" {
+			continue
+		}
+		addr := normalizeSourceAddr(key, raw)
+		if addr == "" {
 			continue
 		}
 		ns, svc := splitAddress(addr)
@@ -484,6 +489,59 @@ func (v combinedView) Get(key string) (string, bool) {
 
 func putString(m pcommon.Map, key, val string) {
 	m.PutStr(key, val)
+}
+
+// normalizeSourceAddr takes the raw value of a source attribute and returns
+// just the host component, suitable for splitAddress / bare-hostname lookup.
+//
+// Modern sem-conv attributes (server.address, net.peer.name) are returned
+// as-is after stripping a trailing :port if present (spec says these should
+// not include a port, but legacy SDKs sometimes embed one).
+//
+// Legacy URL-bearing attributes (http.url, url.full) are parsed as URLs;
+// the URL host is returned (without the port). http.host is treated as
+// host[:port] per the legacy convention.
+//
+// Returns "" when the value cannot be parsed into a usable host. ISI-802
+// follow-up: required to enrich routes for SDKs that only emit http.url
+// (e.g. otel-demo's load-generator and Envoy ingress spans).
+func normalizeSourceAddr(key, raw string) string {
+	switch key {
+	case "http.url", "url.full":
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" {
+			return ""
+		}
+		return u.Hostname()
+	case "http.host":
+		return stripPort(raw)
+	default:
+		// server.address, net.peer.name, and any user-configured attribute:
+		// treat as host[:port]. Strip the port defensively.
+		return stripPort(raw)
+	}
+}
+
+// stripPort removes a trailing ":<port>" from a host string. IPv6 addresses
+// (which contain colons) are left untouched — splitAddress already returns
+// empty for them, and the bare-hostname fallback skips values containing
+// dots (which IPv6 strings do via "::" or hex form).
+func stripPort(host string) string {
+	// IPv6 literal in URL-style brackets: "[::1]:8080" → "[::1]"
+	if strings.HasPrefix(host, "[") {
+		if i := strings.Index(host, "]"); i > 0 {
+			return host[1:i]
+		}
+		return host
+	}
+	// Don't try to strip from raw IPv6 (more than one ':')
+	if strings.Count(host, ":") > 1 {
+		return host
+	}
+	if i := strings.LastIndexByte(host, ':'); i > 0 {
+		return host[:i]
+	}
+	return host
 }
 
 // splitAddress extracts (namespace, service) from a Kubernetes Service DNS
