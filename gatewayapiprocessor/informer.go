@@ -154,14 +154,14 @@ func registerGRPCRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, g
 			if !ok {
 				return
 			}
-			idx.upsertGRPCRoute(grpcRouteToAttrs(gr, gwStore, gcStore, cfg))
+			idx.upsertGRPCRoute(grpcRouteToAttrs(gr, gwStore, gcStore, cfg), backendRefsFromGRPCRoute(gr))
 		},
 		UpdateFunc: func(_, newObj any) {
 			gr, ok := newObj.(*gwv1.GRPCRoute)
 			if !ok {
 				return
 			}
-			idx.upsertGRPCRoute(grpcRouteToAttrs(gr, gwStore, gcStore, cfg))
+			idx.upsertGRPCRoute(grpcRouteToAttrs(gr, gwStore, gcStore, cfg), backendRefsFromGRPCRoute(gr))
 		},
 		DeleteFunc: func(obj any) {
 			gr, ok := obj.(*gwv1.GRPCRoute)
@@ -212,6 +212,7 @@ func httpRouteToAttrs(hr *gwv1.HTTPRoute, gwStore *gatewayStore, gcStore *gatewa
 		Name:      hr.Name,
 		Namespace: hr.Namespace,
 		UID:       string(hr.UID),
+		RouteMode: RouteModeIngress,
 	}
 	if len(hr.Spec.ParentRefs) > 0 {
 		pr := hr.Spec.ParentRefs[0]
@@ -220,7 +221,13 @@ func httpRouteToAttrs(hr *gwv1.HTTPRoute, gwStore *gatewayStore, gcStore *gatewa
 		if pr.Namespace != nil && *pr.Namespace != "" {
 			ns = string(*pr.Namespace)
 		}
-		if gw, ok := gwStore.get(ns, string(pr.Name)); ok {
+		if isServiceParent(pr) {
+			// GAMMA mesh-mode route: the parent IS a backend Service. No
+			// Gateway/GatewayClass attribution; stamp parent service identity.
+			ra.RouteMode = RouteModeMesh
+			ra.ParentServiceName = string(pr.Name)
+			ra.ParentServiceNamespace = ns
+		} else if gw, ok := gwStore.get(ns, string(pr.Name)); ok {
 			ra.GatewayName = gw.Name
 			ra.GatewayNamespace = gw.Namespace
 			ra.GatewayUID = string(gw.UID)
@@ -245,6 +252,7 @@ func grpcRouteToAttrs(gr *gwv1.GRPCRoute, gwStore *gatewayStore, gcStore *gatewa
 		Name:      gr.Name,
 		Namespace: gr.Namespace,
 		UID:       string(gr.UID),
+		RouteMode: RouteModeIngress,
 	}
 	if len(gr.Spec.ParentRefs) > 0 {
 		pr := gr.Spec.ParentRefs[0]
@@ -253,7 +261,12 @@ func grpcRouteToAttrs(gr *gwv1.GRPCRoute, gwStore *gatewayStore, gcStore *gatewa
 		if pr.Namespace != nil && *pr.Namespace != "" {
 			ns = string(*pr.Namespace)
 		}
-		if gw, ok := gwStore.get(ns, string(pr.Name)); ok {
+		if isServiceParent(pr) {
+			// GAMMA mesh-mode route — see httpRouteToAttrs comment.
+			ra.RouteMode = RouteModeMesh
+			ra.ParentServiceName = string(pr.Name)
+			ra.ParentServiceNamespace = ns
+		} else if gw, ok := gwStore.get(ns, string(pr.Name)); ok {
 			ra.GatewayName = gw.Name
 			ra.GatewayNamespace = gw.Namespace
 			ra.GatewayUID = string(gw.UID)
@@ -270,6 +283,20 @@ func grpcRouteToAttrs(gr *gwv1.GRPCRoute, gwStore *gatewayStore, gcStore *gatewa
 		ra.Accepted, ra.ResolvedRefs = statusFlags(gr.Status.Parents)
 	}
 	return ra
+}
+
+// isServiceParent reports whether a ParentReference targets a core-group
+// Service (GAMMA east-west routing) rather than a Gateway. Empty group is
+// the core API group; explicit "" or unset means core. A nil Kind defaults
+// to "Gateway" per the Gateway API CRDs.
+func isServiceParent(pr gwv1.ParentReference) bool {
+	if pr.Group != nil && *pr.Group != "" {
+		return false
+	}
+	if pr.Kind == nil {
+		return false
+	}
+	return *pr.Kind == "Service"
 }
 
 func statusFlags(parents []gwv1.RouteParentStatus) (*bool, *bool) {
@@ -290,13 +317,25 @@ func statusFlags(parents []gwv1.RouteParentStatus) (*bool, *bool) {
 }
 
 func formatParentRef(pr gwv1.ParentReference, ownerNS string) string {
-	group := "gateway.networking.k8s.io"
-	if pr.Group != nil && *pr.Group != "" {
-		group = string(*pr.Group)
-	}
+	// Group resolution mirrors isServiceParent so the two are consistent:
+	//  - Kind=Service: ALWAYS core group (""), since Service is a core
+	//    Kubernetes resource. Honors both nil-Group and explicit-empty-Group
+	//    forms of GAMMA parents — both classify as mesh-mode upstream and
+	//    must format the same way here.
+	//  - Otherwise: nil Group defaults to "gateway.networking.k8s.io" per
+	//    Gateway API; explicit value (including "") wins.
 	kind := "Gateway"
 	if pr.Kind != nil && *pr.Kind != "" {
 		kind = string(*pr.Kind)
+	}
+	var group string
+	switch {
+	case kind == "Service":
+		group = ""
+	case pr.Group != nil:
+		group = string(*pr.Group)
+	default:
+		group = "gateway.networking.k8s.io"
 	}
 	ns := ownerNS
 	if pr.Namespace != nil && *pr.Namespace != "" {

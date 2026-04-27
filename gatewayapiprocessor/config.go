@@ -83,8 +83,46 @@ type EnrichConfig struct {
 }
 
 type BackendRefFallback struct {
-	Enabled         bool   `mapstructure:"enabled"`
+	Enabled bool `mapstructure:"enabled"`
+
+	// SourceAttribute is the legacy (single) attribute the fallback reads to
+	// resolve a Service DNS name. Kept for backward compatibility — new
+	// configs should prefer SourceAttributes (plural).
 	SourceAttribute string `mapstructure:"source_attribute"`
+
+	// SourceAttributes is the ordered list of attribute keys the fallback
+	// inspects. The first key whose value decodes to "<svc>.<ns>.*" and
+	// matches the route index wins. Defaults to ["server.address",
+	// "net.peer.name"] so both modern (1.20+) and legacy OTel sem-conv
+	// resolve. processor-spec §1.3.
+	SourceAttributes []string `mapstructure:"source_attributes"`
+}
+
+// effectiveSourceAttrs returns the ordered attribute keys this config uses
+// for the backendref_fallback path. Combines SourceAttributes and the legacy
+// singular SourceAttribute (in that order, deduped). Returns nil only when
+// both are empty.
+func (b BackendRefFallback) effectiveSourceAttrs() []string {
+	if len(b.SourceAttributes) == 0 && b.SourceAttribute == "" {
+		return nil
+	}
+	out := make([]string, 0, len(b.SourceAttributes)+1)
+	seen := map[string]struct{}{}
+	add := func(k string) {
+		if k == "" {
+			return
+		}
+		if _, ok := seen[k]; ok {
+			return
+		}
+		seen[k] = struct{}{}
+		out = append(out, k)
+	}
+	for _, k := range b.SourceAttributes {
+		add(k)
+	}
+	add(b.SourceAttribute)
+	return out
 }
 
 // Validate enforces processor-spec invariants at config load time.

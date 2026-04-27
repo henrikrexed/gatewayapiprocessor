@@ -18,13 +18,22 @@ type RouteAttributes struct {
 	Accepted     *bool
 	ResolvedRefs *bool
 
-	// Parent Gateway (resolved from route.spec.parentRefs[0]).
+	// Parent Gateway (resolved from route.spec.parentRefs[0] when kind=Gateway).
 	GatewayName                string
 	GatewayNamespace           string
 	GatewayUID                 string
 	GatewayListenerName        string
 	GatewayClassName           string
 	GatewayClassControllerName string
+
+	// RouteMode is "ingress" (parentRef.kind=Gateway) or "mesh"
+	// (parentRef.kind=Service, GAMMA). Empty when the parent kind couldn't be
+	// determined; downstream stamping treats empty as "ingress" for back-compat.
+	RouteMode string
+
+	// Mesh-mode parent Service (GAMMA). Populated only when RouteMode == "mesh".
+	ParentServiceName      string
+	ParentServiceNamespace string
 }
 
 // RouteKind enumerates the CR kinds the processor enriches from.

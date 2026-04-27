@@ -69,14 +69,18 @@ func createDefaultConfig() component.Config {
 			Metrics: true,
 			ExcludeFromMetricAttributes: []string{
 				"k8s.httproute.uid",
+				"k8s.grpcroute.uid",
 				"k8s.gateway.uid",
 				"k8s.gatewayapi.raw_route_name",
 			},
 		},
 		EmitStatusConds: true,
 		BackendRefFallback: BackendRefFallback{
-			Enabled:         true,
-			SourceAttribute: "server.address",
+			Enabled: true,
+			// Walk both modern (1.20+ sem-conv) and legacy span attribute
+			// names so auto-instrumentation that hasn't migrated still
+			// resolves. processor-spec §1.3.
+			SourceAttributes: []string{"server.address", "net.peer.name"},
 		},
 		InformerSyncTimeout: 30 * time.Second,
 	}

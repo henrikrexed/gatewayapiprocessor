@@ -39,7 +39,7 @@ func TestRouteIndex_UpsertAndLookupGRPCRoute(t *testing.T) {
 		Name:      "svc",
 		Namespace: "demo",
 		UID:       "uid-grpc",
-	})
+	}, nil)
 
 	ra, ok := idx.LookupRoute(RouteKindGRPCRoute, "demo", "svc")
 	require.True(t, ok)
@@ -81,7 +81,7 @@ func TestRouteIndex_DeleteHTTPRoute_ClearsBackendIndex(t *testing.T) {
 
 func TestRouteIndex_DeleteGRPCRoute(t *testing.T) {
 	idx := newRouteIndex()
-	idx.upsertGRPCRoute(RouteAttributes{Kind: RouteKindGRPCRoute, Namespace: "demo", Name: "svc"})
+	idx.upsertGRPCRoute(RouteAttributes{Kind: RouteKindGRPCRoute, Namespace: "demo", Name: "svc"}, nil)
 	idx.deleteGRPCRoute("demo", "svc")
 
 	_, ok := idx.LookupRoute(RouteKindGRPCRoute, "demo", "svc")
