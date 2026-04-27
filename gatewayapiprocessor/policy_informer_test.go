@@ -24,11 +24,10 @@ import (
 type policyOpts struct {
 	name    string
 	ns      string
-	kind    string                // default "TrafficPolicy"
-	targets []targetSpec          // spec.targetRefs[]
-	status  string                // "accepted", "rejected", "no-status", "ancestor-accepted"
-	extra   map[string]any        // extra spec fields
-	useSing bool                  // write spec.targetRef (singular) instead
+	kind    string       // default "TrafficPolicy"
+	targets []targetSpec // spec.targetRefs[]
+	status  string       // "accepted", "rejected", "no-status", "ancestor-accepted"
+	useSing bool         // write spec.targetRef (singular) instead
 }
 
 type targetSpec struct {
