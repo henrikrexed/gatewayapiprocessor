@@ -12,7 +12,7 @@
 
 # Versions — authoritative pins live in VERSIONS.md.
 GO              ?= go
-OCB_VERSION     ?= 0.124.0
+OCB_VERSION     ?= 0.150.0
 COLLECTOR_TAG   ?= 2026-04-21
 IMAGE_REGISTRY  ?= ghcr.io/henrikrexed
 IMAGE_NAME      ?= otelcol-gatewayapi

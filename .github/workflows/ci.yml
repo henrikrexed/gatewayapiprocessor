@@ -203,3 +203,66 @@ jobs:
           path: sbom.source.cyclonedx.json
           retention-days: 30
 
+  # ---------------------------------------------------------------------------
+  # Demo-asset validation (per ISI-671 demo-risk §6).
+  # CI does NOT run `make demo` — Henrik runs end-to-end in homelab. CI only
+  # validates the assets so the homelab demo stays green.
+  # ---------------------------------------------------------------------------
+  manifest-lint:
+    name: manifest-lint (yamllint + kubeconform)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install yamllint
+        run: pipx install yamllint
+
+      - name: yamllint deploy/
+        run: yamllint -c .yamllint.yml deploy/
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin kubeconform
+
+      - name: kubeconform deploy/ (k8s + Gateway API CRDs)
+        run: |
+          # Validate full k8s manifests under deploy/ against k8s built-in
+          # schemas + datreeio CRD catalog (Gateway API, OTel Operator, etc.).
+          #
+          # Excluded by design:
+          #   *.snippet.yaml           — partial config fragments, not k8s objects
+          #   deploy/30-demo/helm/**   — Helm chart values, not k8s objects
+          #
+          # Skipped kinds:
+          #   OpenTelemetryCollector   — CRD allows `spec.config` as either
+          #                              string (legacy inline) or object;
+          #                              datreeio schema only accepts object.
+          #                              The operator validates at admission
+          #                              time, so we defer to it.
+          mapfile -t files < <(find deploy/ -type f \( -name '*.yaml' -o -name '*.yml' \) \
+            ! -name '*.snippet.yaml' \
+            ! -path 'deploy/30-demo/helm/*')
+          echo "Validating ${#files[@]} files:"
+          printf '  %s\n' "${files[@]}"
+          kubeconform \
+            -strict \
+            -summary \
+            -ignore-missing-schemas \
+            -skip OpenTelemetryCollector \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            "${files[@]}"
+
+  versions-check:
+    name: versions-check (deploy/ + builder-config + Makefile vs VERSIONS.md)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Run check-versions.sh
+        run: bin/check-versions.sh
+
