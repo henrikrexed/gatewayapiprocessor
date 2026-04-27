@@ -3,6 +3,7 @@ package gatewayapiprocessor
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
@@ -382,6 +383,13 @@ func (p *gatewayAPIProcessor) stampRouteAttrs(attrs pcommon.Map, ra RouteAttribu
 	}
 }
 
+// resourceAttrK8sNamespace is the OTel semantic convention key carrying the
+// workload's Kubernetes namespace on the resource. Used by the bare-hostname
+// fallback (ISI-802) to qualify spans where server.address is just the bare
+// service name (e.g. "cart") — the default OTel SDK auto-instrumentation
+// shape for in-cluster traffic.
+const resourceAttrK8sNamespace = "k8s.namespace.name"
+
 // applyBackendRefFallback tries to resolve a route via the
 // server.address / net.peer.name → route index when no parser matched.
 //
@@ -403,7 +411,18 @@ func (p *gatewayAPIProcessor) applyBackendRefFallback(view combinedView, recordA
 		}
 		ns, svc := splitAddress(addr)
 		if ns == "" || svc == "" {
-			continue
+			// Bare hostname (e.g. "cart") — the OTel SDK auto-instrumentation
+			// emits these for in-cluster traffic. Fall back to the resource's
+			// k8s.namespace.name and treat addr as the bare service name.
+			// processor-spec §1.3 (ISI-802).
+			if !strings.ContainsRune(addr, '.') {
+				if resNs, ok := view.Get(resourceAttrK8sNamespace); ok && resNs != "" {
+					ns, svc = resNs, addr
+				}
+			}
+			if ns == "" || svc == "" {
+				continue
+			}
 		}
 		if r, ok := p.lookup.LookupByBackendService(ns, svc); ok {
 			ra = r
