@@ -1,0 +1,29 @@
+name: Copilot PR Review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+    branches:
+      - main
+      - 'feat/**'
+
+permissions:
+  pull-requests: write
+
+jobs:
+  request-copilot-review:
+    name: Request Copilot review
+    runs-on: ubuntu-latest
+    # Skip draft PRs — Copilot review is only useful on ready-for-review PRs.
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Request Copilot as reviewer
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.pulls.requestReviewers({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              reviewers: ['copilot-pull-request-reviewer'],
+            });
