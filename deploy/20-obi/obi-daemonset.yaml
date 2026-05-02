@@ -2,6 +2,22 @@
 # Kernel-side eBPF auto-instrumentation; carries k8s.pod.*/k8s.node.* via
 # its k8s metadata enrichment so the processor can correlate with HTTPRoute
 # bindings.
+#
+# Export wiring (ISI-836):
+#   - OTLP gRPC endpoint -> our custom collector running gatewayapiprocessor.
+#     The OTel Operator creates the Service for the OpenTelemetryCollector CR
+#     `otelcol` (otel-system) as `otelcol-collector` (Operator convention),
+#     NOT `otelcol`. Pointing at `otelcol.otel-system.svc...` resolves to
+#     nothing and was the root cause of "OBI is not producing any traces".
+#   - Per OBI export-modes docs (https://opentelemetry.io/docs/zero-code/obi/configure/export-data/),
+#     a single OTEL_EXPORTER_OTLP_ENDPOINT enables traces + metrics. OBI does
+#     NOT emit application logs (no logs export documented for v0.8.0); for
+#     workload-level logs, run a filelog-style collector alongside OBI.
+#   - Explicit OTEL_EBPF_METRICS_FEATURES turns on application + span +
+#     service-graph metrics. Without it, only the default `application`
+#     bucket ships and the board's "where are my metrics" check fails.
+#   - Switched BEYLA_* -> OTEL_EBPF_* (OBI v0.8.0 documents the OTEL_EBPF_
+#     prefix; BEYLA_ prefix is undocumented for this version).
 ---
 apiVersion: v1
 kind: Namespace
@@ -72,15 +88,32 @@ spec:
                 - BPF
                 - PERFMON
           env:
+            # OTLP gRPC out to the cluster-local custom collector. Service
+            # name is `<cr-name>-collector` (Operator convention); see file
+            # header for why the previous `otelcol.otel-system...` was wrong.
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://otelcol.otel-system.svc.cluster.local:4317"
+              value: "http://otelcol-collector.otel-system.svc.cluster.local:4317"
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: "grpc"
             - name: OTEL_SERVICE_NAME
               value: "obi"
-            - name: BEYLA_KUBE_METADATA_ENABLE
+            # Explicitly enable both signals so OBI doesn't silently drop one
+            # if upstream defaults shift between v0.8.x patch releases.
+            - name: OTEL_EBPF_TRACES_INSTRUMENTATIONS
+              value: "http,grpc,sql,redis,kafka"
+            - name: OTEL_EBPF_METRICS_INSTRUMENTATIONS
+              value: "http,grpc,sql,redis,kafka"
+            # `application` = HTTP/gRPC summaries (default); `application_span`
+            # = span-derived metrics; `application_service_graph` = the topology
+            # the board verifies in Dynatrace Smartscape. Keep `network` OFF
+            # for now — it adds per-flow cardinality that we don't size for.
+            - name: OTEL_EBPF_METRICS_FEATURES
+              value: "application,application_span,application_service_graph"
+            # K8s metadata enrichment + discovery cadence (renamed from
+            # BEYLA_KUBE_METADATA_ENABLE / BEYLA_DISCOVERY_POLL_INTERVAL).
+            - name: OTEL_EBPF_KUBE_METADATA_ENABLE
               value: "true"
-            - name: BEYLA_DISCOVERY_POLL_INTERVAL
+            - name: OTEL_EBPF_DISCOVERY_POLL_INTERVAL
               value: "5s"
           volumeMounts:
             - name: sys
