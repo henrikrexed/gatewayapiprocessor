@@ -36,7 +36,7 @@ jobs:
         go: ['1.26']
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5  # pinned to v5 until actions/checkout#2299 closes (ISI-846)
 
       - name: Setup Go ${{ matrix.go }}
         uses: actions/setup-go@v6
@@ -83,7 +83,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5  # pinned to v5 until actions/checkout#2299 closes (ISI-846)
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -107,7 +107,7 @@ jobs:
     needs: test
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5  # pinned to v5 until actions/checkout#2299 closes (ISI-846)
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -140,7 +140,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5  # pinned to v5 until actions/checkout#2299 closes (ISI-846)
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -160,7 +160,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5  # pinned to v5 until actions/checkout#2299 closes (ISI-846)
 
       - name: Trivy filesystem scan (vuln + secret, SARIF)
         uses: aquasecurity/trivy-action@v0.35.0
@@ -187,7 +187,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5  # pinned to v5 until actions/checkout#2299 closes (ISI-846)
 
       - name: Generate source SBOM with Syft
         uses: anchore/sbom-action@v0
@@ -214,7 +214,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5  # pinned to v5 until actions/checkout#2299 closes (ISI-846)
 
       - name: Install yamllint
         run: pipx install yamllint
@@ -264,7 +264,7 @@ jobs:
     if: github.event_name == 'pull_request'
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5  # pinned to v5 until actions/checkout#2299 closes (ISI-846)
 
       - name: Run check-versions.sh
         run: bin/check-versions.sh
