@@ -32,7 +32,7 @@ jobs:
       skip: ${{ steps.check.outputs.skip }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5  # pinned to v5 until actions/checkout#2299 closes (ISI-846)
         with:
           fetch-depth: 0  # mkdocs-material git-revision plugin needs history.
 
