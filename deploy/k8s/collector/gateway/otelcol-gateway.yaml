@@ -129,6 +129,19 @@ spec:
       gatewayapi:
         watch:
           resync_period: 60s
+          # Gateway API policy attachment CRDs (ISI-804 / ISI-852). The
+          # processor's dynamic informer factory builds one watcher per GVR
+          # listed here and projects spec.targetRefs[*] onto the route index
+          # so every span/log/metric on a matched HTTPRoute/GRPCRoute carries
+          # `k8s.gatewayapi.policy.{names,kinds,namespaces,groups,target_kind}`.
+          # Without this list, `stampPolicyAttrs` (processor.go:399) is
+          # unreachable: `cfg.Watch.Policies` is empty → startPolicyInformers
+          # returns early → the index never receives policy refs. RBAC for
+          # these CRDs already lives in deploy/40-collector/rbac.yaml.
+          policies:
+            - group: gateway.kgateway.dev
+              version: v1alpha1
+              resource: trafficpolicies
         informer_sync_timeout: 30s
         # Cardinality guard — drop UIDs from the metrics enrichment so
         # the gateway doesn't emit high-cardinality (and not actionable)
