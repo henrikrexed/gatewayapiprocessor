@@ -43,6 +43,14 @@ rules:
       - httproutes/status
       - grpcroutes/status
     verbs: ["get", "list", "watch"]
+  # Policy attachment enrichment (ISI-804 / ISI-852). Dynamic informer
+  # watches each CRD listed under watch.policies in otelcol-gateway.yaml.
+  # /status is included so the Accepted=True gate works correctly.
+  - apiGroups: ["gateway.kgateway.dev"]
+    resources:
+      - trafficpolicies
+      - trafficpolicies/status
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
