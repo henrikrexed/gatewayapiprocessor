@@ -72,7 +72,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: true
           cache-dependency-path: gatewayapiprocessor/go.sum
 
@@ -137,14 +137,14 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: true
           cache-dependency-path: gatewayapiprocessor/go.sum
 
       - name: Run govulncheck
         uses: golang/govulncheck-action@v1
         with:
-          go-version-input: '1.25'
+          go-version-input: '1.26'
           work-dir: gatewayapiprocessor
 
   # ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@ Pinned manifest for the `gatewayapiprocessor` demo stack.
 | Loki                          | 3.2            | Compose file pin                                                    |
 | Prometheus                    | 3.1            | Compose file pin                                                    |
 | Dynatrace OTel endpoint       | SaaS           | DT tenant env + token in Makefile from env vars                     |
-| Go                            | 1.25           | Required by OTel Collector v0.150 modules (bumped by ISI-687)       |
+| Go                            | 1.26           | Forced by `k8s.io/apimachinery@v0.36` + `client-go@v0.36` `go 1.26.0` directive (ISI-844; previously 1.25 / ISI-687) |
 
 ## Cluster requirements
 
