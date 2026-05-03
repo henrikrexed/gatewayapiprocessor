@@ -36,6 +36,14 @@ rules:
       - grpcroutes
       - gatewayclasses
     verbs: ["get", "list", "watch"]
+  # gatewayapiprocessor IP reverse-lookup informer (ISI-851). The Service
+  # informer maintains a ClusterIP -> (namespace, name) index used by
+  # backendref_fallback to resolve IP-literal server.address values that
+  # otherwise fell through splitAddress. Cluster-scoped read so the index
+  # covers Services in every namespace the gateway might route to.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
   # emit_status_conditions — status subresources.
   - apiGroups: ["gateway.networking.k8s.io"]
     resources:

@@ -587,6 +587,36 @@ func TestBackendRefFallback_IPv6Host_NoStamp(t *testing.T) {
 	assert.False(t, ok, "IPv6 host must not mis-attribute")
 }
 
+// ISI-851 matrix row: dual-stack IPv6 ClusterIP resolves via Service-IP index.
+// The audit on observable-gateapiprocess found ~20.5% of otel-demo spans
+// carried IP-literal server.address; this row pins both the ClusterIP path
+// and the IPv6 form so a future regression doesn't quietly re-open the gap.
+func TestBackendRefFallback_IPv6ClusterIP_ResolvesViaServiceIPIndex(t *testing.T) {
+	lookup := newStaticLookup()
+	lookup.putServiceIP("fd00::dead:beef", "otel-demo", "currency")
+	lookup.putBackend("otel-demo", "currency", RouteAttributes{
+		Kind:      RouteKindHTTPRoute,
+		Name:      "currency",
+		Namespace: "otel-demo",
+		UID:       "uid-currency",
+	})
+
+	tp := newTestProcessors(t, lookup, func(c *Config) {
+		c.BackendRefFallback = BackendRefFallback{Enabled: true, SourceAttribute: "server.address"}
+	})
+
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(),
+		singleSpanWith(map[string]string{"server.address": "fd00::dead:beef"}),
+	))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+	name, ok := attrs.Get(AttrHTTPRouteName)
+	require.True(t, ok, "v6 ClusterIP must resolve via Service-IP index")
+	assert.Equal(t, "currency", name.AsString())
+	parser, _ := attrs.Get(AttrParser)
+	assert.Equal(t, "backendref_fallback", parser.AsString())
+}
+
 // backendref_fallback (ISI-802 follow-up): bare hostname with resource namespace set,
 // but the (ns, svc) pair has no entry in the route index — still a no-op.
 func TestBackendRefFallback_BareHostname_UnknownService_NoStamp(t *testing.T) {

@@ -26,6 +26,13 @@ rules:
       - grpcroutes
       - gatewayclasses
     verbs: ["get", "list", "watch"]
+  # gatewayapiprocessor IP reverse-lookup informer (ISI-851). Reads Service
+  # spec.clusterIP / spec.clusterIPs so backendref_fallback can resolve
+  # IP-literal server.address values to the owning Service. Phase 2 will add
+  # discovery.k8s.io endpointslices for PodIP-shaped values.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
   # k8sattributes processor
   - apiGroups: [""]
     resources: ["pods", "namespaces", "nodes"]

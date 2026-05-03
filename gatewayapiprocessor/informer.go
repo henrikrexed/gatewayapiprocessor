@@ -84,6 +84,24 @@ func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLo
 	}
 	informers = append(informers, policyInformers...)
 
+	// Service-IP informer (ISI-851). Gated on backendref_fallback.enabled —
+	// the index is only consulted from applyBackendRefFallback, which itself
+	// short-circuits when the feature is off (processor.go:259). Skipping the
+	// informer when the feature is disabled avoids a cluster-scoped list+watch
+	// on core/v1/Services that would stream every Service create/update/delete
+	// to every collector pod for no benefit (Copilot review on PR #55).
+	// Phase 2 (EndpointSlice -> PodIP) will plug into the same combinedLookup
+	// behind the same flag.
+	var ipIndex *serviceIPIndex
+	if cfg.BackendRefFallback.Enabled {
+		var svcInformers []cache.SharedIndexInformer
+		svcInformers, ipIndex, err = startServiceInformer(ctx, logger, restCfg, cfg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("start service informer: %w", err)
+		}
+		informers = append(informers, svcInformers...)
+	}
+
 	syncCtx, cancel := context.WithTimeout(ctx, defaultSyncTimeout(cfg.InformerSyncTimeout))
 	defer cancel()
 	for _, inf := range informers {
@@ -96,7 +114,7 @@ func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLo
 		// factories stop when ctx.Done() fires; nothing to do here beyond that.
 		return nil
 	}
-	return index, stop, nil
+	return &combinedLookup{routes: index, ips: ipIndex}, stop, nil
 }
 
 func buildRESTConfig(cfg *Config) (*rest.Config, error) {
