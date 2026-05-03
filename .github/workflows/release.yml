@@ -268,7 +268,7 @@ jobs:
     needs: image
     steps:
       - name: Trivy image scan
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           # metadata-action strips the leading `v` via `type=semver,pattern={{version}}`,
           # so the image is tagged `0.0.1`, not `v0.0.1`. Use the stripped version that
