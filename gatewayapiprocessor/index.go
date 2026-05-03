@@ -29,6 +29,14 @@ type routeIndex struct {
 	// so we can detect ambiguity on subsequent updates.
 	claimedBackends map[string]string // key -> "<kind>|<ns>/<name>" owner
 
+	// backendOwners records the full owner set for each backend Service key —
+	// unlike backendIndex it is NOT dropped on ambiguity. Used by
+	// LookupByBackendServiceWithParents (ISI-805) to expose all candidate
+	// routes when binary disambiguation can recover a legitimate match (mesh +
+	// ingress sharing the same backend Service in dual-mode meshes).
+	// Key = "<ns>/<service>", value = set of owner keys ("<kind>|<ns>/<name>").
+	backendOwners map[string]map[string]struct{}
+
 	// policies maps a route key to the deduplicated PolicyRefs whose
 	// CRD spec.targetRefs[*] points at it. Lives separately from `routes`
 	// so route lifecycle (informer add/update/delete) and policy lifecycle
@@ -43,6 +51,7 @@ func newRouteIndex() *routeIndex {
 		routes:          make(map[string]RouteAttributes),
 		backendIndex:    make(map[string]RouteAttributes),
 		claimedBackends: make(map[string]string),
+		backendOwners:   make(map[string]map[string]struct{}),
 		policies:        make(map[string][]PolicyRef),
 	}
 }
@@ -70,6 +79,32 @@ func (r *routeIndex) LookupByBackendService(ns, svc string) (RouteAttributes, bo
 	}
 	r.overlayPoliciesLocked(routeKey(ra.Kind, ra.Namespace, ra.Name), &ra)
 	return ra, true
+}
+
+// LookupByBackendServiceWithParents satisfies RouteLookup.
+//
+// Returns every RouteAttributes that currently claims (ns, svc) as a
+// backendRef, regardless of ambiguity. Callers (the backendref_fallback
+// disambiguator on ISI-805) decide whether to stamp.
+//
+// Returns (nil, false) when no route claims the backend. The returned slice
+// always reflects the current state of `routes` because the delete handlers
+// prune `backendOwners` in lockstep — there is no need to defend against
+// stale owner-set entries here.
+func (r *routeIndex) LookupByBackendServiceWithParents(ns, svc string) ([]RouteAttributes, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	owners := r.backendOwners[ns+"/"+svc]
+	if len(owners) == 0 {
+		return nil, false
+	}
+	out := make([]RouteAttributes, 0, len(owners))
+	for ownerKey := range owners {
+		ra := r.routes[ownerKey]
+		r.overlayPoliciesLocked(ownerKey, &ra)
+		out = append(out, ra)
+	}
+	return out, true
 }
 
 // overlayPoliciesLocked attaches the current policy snapshot for the given
@@ -160,12 +195,16 @@ func (r *routeIndex) upsertGRPCRoute(ra RouteAttributes, backendRefs []backendRe
 
 // reindexBackends releases previously-owned backend keys that are no longer
 // in backendRefs, then re-claims the current set. Caller must hold r.mu.
+//
+// Two indexes are maintained in parallel:
+//   - backendIndex   : single-candidate fast path (drops on ambiguity).
+//   - backendOwners  : full owner set for the binary disambiguator (ISI-805).
 func (r *routeIndex) reindexBackends(owner string, ra RouteAttributes, backendRefs []backendRef) {
 	wanted := make(map[string]struct{}, len(backendRefs))
 	for _, b := range backendRefs {
 		wanted[b.Namespace+"/"+b.Name] = struct{}{}
 	}
-	// Drop stale claims belonging to this owner.
+	// Drop stale single-candidate claims belonging to this owner.
 	for bkey, claim := range r.claimedBackends {
 		if claim != owner {
 			continue
@@ -176,12 +215,34 @@ func (r *routeIndex) reindexBackends(owner string, ra RouteAttributes, backendRe
 		delete(r.claimedBackends, bkey)
 		delete(r.backendIndex, bkey)
 	}
+	// Drop stale multi-owner entries belonging to this owner.
+	for bkey, owners := range r.backendOwners {
+		if _, owned := owners[owner]; !owned {
+			continue
+		}
+		if _, keep := wanted[bkey]; keep {
+			continue
+		}
+		delete(owners, owner)
+		if len(owners) == 0 {
+			delete(r.backendOwners, bkey)
+		}
+	}
 	// (Re)claim current backends.
 	for _, b := range backendRefs {
 		bkey := b.Namespace + "/" + b.Name
+		// Multi-owner index: always record this owner. The disambiguator gets
+		// the latest RouteAttributes via r.routes[ownerKey] at lookup time.
+		if r.backendOwners[bkey] == nil {
+			r.backendOwners[bkey] = make(map[string]struct{})
+		}
+		r.backendOwners[bkey][owner] = struct{}{}
+
+		// Single-candidate fast path: drop on conflict, claim otherwise.
 		if existing, ok := r.claimedBackends[bkey]; ok && existing != owner {
-			// Multiple routes reference this service — drop the index entry so
-			// backendref_fallback never attributes ambiguously.
+			// Multiple routes reference this service — drop the single-candidate
+			// entry so the legacy LookupByBackendService never mis-attributes.
+			// The disambiguator path (ISI-805) still sees both via backendOwners.
 			delete(r.backendIndex, bkey)
 			continue
 		}
@@ -196,12 +257,7 @@ func (r *routeIndex) deleteHTTPRoute(ns, name string) {
 	defer r.mu.Unlock()
 	key := routeKey(RouteKindHTTPRoute, ns, name)
 	delete(r.routes, key)
-	for bkey, owner := range r.claimedBackends {
-		if owner == key {
-			delete(r.claimedBackends, bkey)
-			delete(r.backendIndex, bkey)
-		}
-	}
+	r.dropBackendOwnershipLocked(key)
 }
 
 func (r *routeIndex) deleteGRPCRoute(ns, name string) {
@@ -209,10 +265,25 @@ func (r *routeIndex) deleteGRPCRoute(ns, name string) {
 	defer r.mu.Unlock()
 	key := routeKey(RouteKindGRPCRoute, ns, name)
 	delete(r.routes, key)
+	r.dropBackendOwnershipLocked(key)
+}
+
+// dropBackendOwnershipLocked removes the given route owner from both the
+// single-candidate and multi-owner backend indexes. Caller must hold r.mu.
+func (r *routeIndex) dropBackendOwnershipLocked(key string) {
 	for bkey, owner := range r.claimedBackends {
 		if owner == key {
 			delete(r.claimedBackends, bkey)
 			delete(r.backendIndex, bkey)
+		}
+	}
+	for bkey, owners := range r.backendOwners {
+		if _, has := owners[key]; !has {
+			continue
+		}
+		delete(owners, key)
+		if len(owners) == 0 {
+			delete(r.backendOwners, bkey)
 		}
 	}
 }

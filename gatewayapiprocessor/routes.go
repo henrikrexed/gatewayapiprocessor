@@ -74,6 +74,13 @@ type RouteLookup interface {
 	// references the given Service. Used by the backendref_fallback path.
 	// Returns (_, false) when no unambiguous match is available.
 	LookupByBackendService(namespace, service string) (RouteAttributes, bool)
+	// LookupByBackendServiceWithParents returns every route that claims the
+	// given backend Service, including the ambiguous case where the
+	// single-candidate index would have dropped the entry. Used by the
+	// binary disambiguator on the backendref_fallback path (ISI-805) to
+	// recover legitimate mesh + ingress dual-mode topologies that share a
+	// backend Service.
+	LookupByBackendServiceWithParents(namespace, service string) ([]RouteAttributes, bool)
 }
 
 // staticLookup is a trivial RouteLookup used by tests and by the
@@ -82,16 +89,18 @@ type RouteLookup interface {
 // It also satisfies ServiceIPLookup so the same fixture can drive the
 // IP reverse-lookup fallback path (ISI-851) without spinning up informers.
 type staticLookup struct {
-	routes       map[string]RouteAttributes // key = "<kind>|<ns>/<name>"
-	backendIndex map[string]RouteAttributes // key = "<ns>/<service>"
-	serviceIPs   map[string]nsName          // key = canonical IP literal
+	routes          map[string]RouteAttributes   // key = "<kind>|<ns>/<name>"
+	backendIndex    map[string]RouteAttributes   // key = "<ns>/<service>"
+	backendIndexAll map[string][]RouteAttributes // key = "<ns>/<service>" — all candidates (ISI-805)
+	serviceIPs      map[string]nsName            // key = canonical IP literal
 }
 
 func newStaticLookup() *staticLookup {
 	return &staticLookup{
-		routes:       make(map[string]RouteAttributes),
-		backendIndex: make(map[string]RouteAttributes),
-		serviceIPs:   make(map[string]nsName),
+		routes:          make(map[string]RouteAttributes),
+		backendIndex:    make(map[string]RouteAttributes),
+		backendIndexAll: make(map[string][]RouteAttributes),
+		serviceIPs:      make(map[string]nsName),
 	}
 }
 
@@ -99,8 +108,19 @@ func (s *staticLookup) put(kind RouteKind, ns, name string, attrs RouteAttribute
 	s.routes[routeKey(kind, ns, name)] = attrs
 }
 
+// putBackend seeds the single-candidate backend index. Mirrors routeIndex
+// semantics: a second putBackend for the same (ns, svc) drops the index entry
+// (ambiguous) but the candidate is still retained in backendIndexAll so the
+// disambiguator can see all owners.
 func (s *staticLookup) putBackend(ns, svc string, attrs RouteAttributes) {
-	s.backendIndex[ns+"/"+svc] = attrs
+	bkey := ns + "/" + svc
+	s.backendIndexAll[bkey] = append(s.backendIndexAll[bkey], attrs)
+	if _, exists := s.backendIndex[bkey]; exists {
+		// Mimic the ambiguous-drop behaviour of the real route index.
+		delete(s.backendIndex, bkey)
+		return
+	}
+	s.backendIndex[bkey] = attrs
 }
 
 // putServiceIP seeds an IP -> (ns, svc) mapping. Tests use this to simulate a
@@ -122,6 +142,15 @@ func (s *staticLookup) LookupRoute(kind RouteKind, ns, name string) (RouteAttrib
 func (s *staticLookup) LookupByBackendService(ns, service string) (RouteAttributes, bool) {
 	r, ok := s.backendIndex[ns+"/"+service]
 	return r, ok
+}
+
+// LookupByBackendServiceWithParents satisfies RouteLookup.
+func (s *staticLookup) LookupByBackendServiceWithParents(ns, service string) ([]RouteAttributes, bool) {
+	rs, ok := s.backendIndexAll[ns+"/"+service]
+	if !ok || len(rs) == 0 {
+		return nil, false
+	}
+	return rs, true
 }
 
 // LookupServiceByIP satisfies ServiceIPLookup for tests.
@@ -152,6 +181,10 @@ func (c *combinedLookup) LookupRoute(kind RouteKind, ns, name string) (RouteAttr
 
 func (c *combinedLookup) LookupByBackendService(ns, service string) (RouteAttributes, bool) {
 	return c.routes.LookupByBackendService(ns, service)
+}
+
+func (c *combinedLookup) LookupByBackendServiceWithParents(ns, service string) ([]RouteAttributes, bool) {
+	return c.routes.LookupByBackendServiceWithParents(ns, service)
 }
 
 func (c *combinedLookup) LookupServiceByIP(ip string) (string, string, bool) {
