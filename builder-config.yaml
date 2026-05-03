@@ -51,5 +51,18 @@ extensions:
 # so we have to step one level back out to reach the processor sources at the
 # repo root. Using ./gatewayapiprocessor resolves to _build/gatewayapiprocessor
 # and makes `go mod tidy` fail (see ISI-693).
+#
+# k8s.io/* pins (ISI-844): dependabot PR #50 bumped this processor's go.mod
+# to k8s.io 0.36.0, but contrib v0.150 / v0.151's k8sattributesprocessor still
+# requires k8s.io 0.35.x — its internal/kube/fake_informer.go does not
+# implement client-go v0.36's new cache.SharedInformer.HasSyncedChecker()
+# method, so MVS picking 0.36 breaks the OCB build. Pin k8s.io/* down to
+# 0.35.4 in the OCB-generated go.mod only; this processor is API-compatible
+# with 0.35.x at runtime (we only consume informer factories, never implement
+# cache interfaces). Drop these once contrib catches up to k8s.io 0.36
+# (track upstream open-telemetry/opentelemetry-collector-contrib).
 replaces:
   - github.com/henrikrexed/gatewayapiprocessor/gatewayapiprocessor => ../gatewayapiprocessor
+  - k8s.io/api => k8s.io/api v0.35.4
+  - k8s.io/apimachinery => k8s.io/apimachinery v0.35.4
+  - k8s.io/client-go => k8s.io/client-go v0.35.4
