@@ -243,6 +243,86 @@ func TestBackendRefFallback(t *testing.T) {
 	assert.Equal(t, "demo", ns.AsString())
 }
 
+// ISI-851 — span carrying an IP-literal server.address resolves via the
+// Service-IP reverse-lookup index. This was the ~20% coverage gap on the
+// observable-gateapiprocess cluster: dotted-octet ClusterIPs fell through
+// splitAddress as garbage tuples ("108", "10") and never hit the route index.
+func TestBackendRefFallback_IPLiteralResolvesViaServiceIPIndex(t *testing.T) {
+	lookup := newStaticLookup()
+	// Wire a Service IP -> (ns, name) entry, and the matching route claims
+	// that backend Service. Simulates the production combinedLookup path.
+	lookup.putServiceIP("10.108.2.156", "otel-demo", "product-catalog")
+	lookup.putBackend("otel-demo", "product-catalog", RouteAttributes{
+		Kind:        RouteKindHTTPRoute,
+		Name:        "product-catalog",
+		Namespace:   "otel-demo",
+		UID:         "uid-pc",
+		GatewayName: "public",
+	})
+
+	tp := newTestProcessors(t, lookup, func(c *Config) {
+		c.BackendRefFallback = BackendRefFallback{Enabled: true, SourceAttribute: "server.address"}
+	})
+
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(),
+		singleSpanWith(map[string]string{"server.address": "10.108.2.156"}),
+	))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+	name, ok := attrs.Get(AttrHTTPRouteName)
+	require.True(t, ok, "IP-literal server.address must resolve via the Service-IP index")
+	assert.Equal(t, "product-catalog", name.AsString())
+	ns, _ := attrs.Get(AttrHTTPRouteNamespace)
+	assert.Equal(t, "otel-demo", ns.AsString())
+	parser, _ := attrs.Get(AttrParser)
+	assert.Equal(t, "backendref_fallback", parser.AsString(),
+		"parser id must remain backendref_fallback so dashboards keep their existing filter")
+}
+
+// ISI-851 — IP that resolves to a Service no route claims must NOT poison
+// the fallback by silently calling splitAddress on the raw IP. The expected
+// outcome is "no enrichment", not a wildly wrong attribution.
+func TestBackendRefFallback_UnclaimedIPIsNotMisattributed(t *testing.T) {
+	lookup := newStaticLookup()
+	lookup.putServiceIP("10.108.2.156", "otel-demo", "orphan-svc")
+	// Note: NO putBackend for orphan-svc.
+
+	tp := newTestProcessors(t, lookup, func(c *Config) {
+		c.BackendRefFallback = BackendRefFallback{Enabled: true, SourceAttribute: "server.address"}
+	})
+
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(),
+		singleSpanWith(map[string]string{"server.address": "10.108.2.156"}),
+	))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+	_, hasName := attrs.Get(AttrHTTPRouteName)
+	assert.False(t, hasName, "unclaimed Service IP must not stamp any route — better silent than wrong")
+	_, hasNS := attrs.Get(AttrHTTPRouteNamespace)
+	assert.False(t, hasNS)
+}
+
+// ISI-851 — IP that the Service-IP index doesn't know (external host, PodIP
+// with no Service claim) must cleanly skip the fallback. The pre-ISI-851 bug
+// was splitAddress turning "10.108.2.156" into ns="108"/svc="10" and querying
+// the index with garbage; this regression test pins the no-op behavior.
+func TestBackendRefFallback_UnknownIPDoesNotCallSplitAddress(t *testing.T) {
+	lookup := newStaticLookup()
+	// No Service IP, no backend — the index is empty.
+	tp := newTestProcessors(t, lookup, func(c *Config) {
+		c.BackendRefFallback = BackendRefFallback{Enabled: true, SourceAttribute: "server.address"}
+	})
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(),
+		singleSpanWith(map[string]string{"server.address": "10.244.77.141"}),
+	))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+	_, hasName := attrs.Get(AttrHTTPRouteName)
+	assert.False(t, hasName)
+	_, hasParser := attrs.Get(AttrParser)
+	assert.False(t, hasParser, "no parser id must be stamped when nothing matched")
+}
+
 // ---- Test 10: informer sync timeout ----
 
 // Test 10 — Missing RBAC / unreachable API causes Start() to fail within the

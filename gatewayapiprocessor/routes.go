@@ -78,15 +78,20 @@ type RouteLookup interface {
 
 // staticLookup is a trivial RouteLookup used by tests and by the
 // no-Kubernetes mode (auth_type=none, no informers).
+//
+// It also satisfies ServiceIPLookup so the same fixture can drive the
+// IP reverse-lookup fallback path (ISI-851) without spinning up informers.
 type staticLookup struct {
 	routes       map[string]RouteAttributes // key = "<kind>|<ns>/<name>"
 	backendIndex map[string]RouteAttributes // key = "<ns>/<service>"
+	serviceIPs   map[string]nsName          // key = canonical IP literal
 }
 
 func newStaticLookup() *staticLookup {
 	return &staticLookup{
 		routes:       make(map[string]RouteAttributes),
 		backendIndex: make(map[string]RouteAttributes),
+		serviceIPs:   make(map[string]nsName),
 	}
 }
 
@@ -98,6 +103,17 @@ func (s *staticLookup) putBackend(ns, svc string, attrs RouteAttributes) {
 	s.backendIndex[ns+"/"+svc] = attrs
 }
 
+// putServiceIP seeds an IP -> (ns, svc) mapping. Tests use this to simulate a
+// Service informer cache for the ISI-851 fallback path. The IP is normalized
+// before storing so callers can pass either canonical or non-canonical forms.
+func (s *staticLookup) putServiceIP(ip, ns, svc string) {
+	canon := canonicalIP(ip)
+	if canon == "" {
+		return
+	}
+	s.serviceIPs[canon] = nsName{Namespace: ns, Name: svc}
+}
+
 func (s *staticLookup) LookupRoute(kind RouteKind, ns, name string) (RouteAttributes, bool) {
 	r, ok := s.routes[routeKey(kind, ns, name)]
 	return r, ok
@@ -106,6 +122,43 @@ func (s *staticLookup) LookupRoute(kind RouteKind, ns, name string) (RouteAttrib
 func (s *staticLookup) LookupByBackendService(ns, service string) (RouteAttributes, bool) {
 	r, ok := s.backendIndex[ns+"/"+service]
 	return r, ok
+}
+
+// LookupServiceByIP satisfies ServiceIPLookup for tests.
+func (s *staticLookup) LookupServiceByIP(ip string) (string, string, bool) {
+	canon := canonicalIP(ip)
+	if canon == "" {
+		return "", "", false
+	}
+	v, ok := s.serviceIPs[canon]
+	if !ok {
+		return "", "", false
+	}
+	return v.Namespace, v.Name, true
+}
+
+// combinedLookup glues the route index and the Service-IP index into a single
+// RouteLookup-shaped object so the processor can carry one pointer. The
+// processor's fallback path type-asserts to ServiceIPLookup before consulting
+// the IP index — that lets staticLookup-only tests stay source-compatible.
+type combinedLookup struct {
+	routes *routeIndex
+	ips    *serviceIPIndex
+}
+
+func (c *combinedLookup) LookupRoute(kind RouteKind, ns, name string) (RouteAttributes, bool) {
+	return c.routes.LookupRoute(kind, ns, name)
+}
+
+func (c *combinedLookup) LookupByBackendService(ns, service string) (RouteAttributes, bool) {
+	return c.routes.LookupByBackendService(ns, service)
+}
+
+func (c *combinedLookup) LookupServiceByIP(ip string) (string, string, bool) {
+	if c.ips == nil {
+		return "", "", false
+	}
+	return c.ips.LookupServiceByIP(ip)
 }
 
 func routeKey(kind RouteKind, ns, name string) string {

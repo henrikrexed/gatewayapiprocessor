@@ -3,6 +3,7 @@ package gatewayapiprocessor
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 
@@ -436,6 +437,11 @@ func (p *gatewayAPIProcessor) applyBackendRefFallback(view combinedView, recordA
 	if len(keys) == 0 {
 		return
 	}
+	// ipLookup is optional: production wires combinedLookup which satisfies
+	// both interfaces; tests using bare staticLookup get IP support too via
+	// the same assertion. A pure RouteLookup-only fake leaves ipLookup nil
+	// and the IP branch is skipped.
+	ipLookup, _ := p.lookup.(ServiceIPLookup)
 	var ra RouteAttributes
 	var matched bool
 	for _, key := range keys {
@@ -445,6 +451,22 @@ func (p *gatewayAPIProcessor) applyBackendRefFallback(view combinedView, recordA
 		}
 		addr := normalizeSourceAddr(key, raw)
 		if addr == "" {
+			continue
+		}
+		// IP-literal first: the dotted-octet form ("10.108.2.156") would
+		// otherwise be misread by splitAddress as ns="108", svc="10". Try
+		// the Service-IP index (ISI-851) before any DNS-shaped parsing so a
+		// canonical resolution wins. Failures fall through to splitAddress.
+		if ipLookup != nil && net.ParseIP(addr) != nil {
+			if ns, svc, found := ipLookup.LookupServiceByIP(addr); found {
+				if r, ok := p.lookup.LookupByBackendService(ns, svc); ok {
+					ra = r
+					matched = true
+					break
+				}
+			}
+			// Known IP literal but no matching Service or no route claims it;
+			// don't try splitAddress on raw IPs — it produces garbage tuples.
 			continue
 		}
 		ns, svc := splitAddress(addr)

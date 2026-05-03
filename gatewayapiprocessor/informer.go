@@ -84,6 +84,16 @@ func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLo
 	}
 	informers = append(informers, policyInformers...)
 
+	// Service-IP informer (ISI-851). Always starts; the index is consulted
+	// only by applyBackendRefFallback when backendref_fallback is enabled, so
+	// users who don't opt in pay the list/watch cost but no enrichment cost.
+	// Phase 2 (EndpointSlice -> PodIP) will plug into the same combinedLookup.
+	svcInformers, ipIndex, err := startServiceInformer(ctx, logger, restCfg, cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("start service informer: %w", err)
+	}
+	informers = append(informers, svcInformers...)
+
 	syncCtx, cancel := context.WithTimeout(ctx, defaultSyncTimeout(cfg.InformerSyncTimeout))
 	defer cancel()
 	for _, inf := range informers {
@@ -96,7 +106,7 @@ func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLo
 		// factories stop when ctx.Done() fires; nothing to do here beyond that.
 		return nil
 	}
-	return index, stop, nil
+	return &combinedLookup{routes: index, ips: ipIndex}, stop, nil
 }
 
 func buildRESTConfig(cfg *Config) (*rest.Config, error) {
