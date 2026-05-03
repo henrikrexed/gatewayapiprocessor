@@ -163,7 +163,7 @@ jobs:
         uses: actions/checkout@v5  # pinned to v5 until actions/checkout#2299 closes (ISI-846)
 
       - name: Trivy filesystem scan (vuln + secret, SARIF)
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
