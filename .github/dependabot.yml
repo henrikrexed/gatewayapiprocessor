@@ -9,6 +9,11 @@ updates:
     labels:
       - dependencies
       - github-actions
+    ignore:
+      # Pinned to v5 — v6 introduces a duplicate Authorization header bug
+      # (actions/checkout#2299, tracked ISI-855). Remove once upstream fixes it.
+      - dependency-name: "actions/checkout"
+        versions: [">=6"]
 
   # Go module
   - package-ecosystem: gomod
