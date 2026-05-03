@@ -29,10 +29,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # OTEL Collector v0.150 requires Go 1.25. Run the matrix on 1.25 only —
-        # lower minors will auto-bump via GOTOOLCHAIN=auto anyway, but pinning
-        # the reported version keeps CI logs readable.
-        go: ['1.25']
+        # k8s.io/apimachinery v0.36 + client-go v0.36 declare go 1.26.0 in their
+        # go.mod, which propagates into ours via `go mod tidy` (ISI-844).
+        # Pinning the matrix at 1.26 keeps CI logs readable and avoids relying
+        # on GOTOOLCHAIN=auto to fetch a newer toolchain on every run.
+        go: ['1.26']
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -70,7 +71,7 @@ jobs:
           echo "COVERAGE_PCT=$pct" >> "$GITHUB_ENV"
 
       - name: Upload coverage artifact
-        if: matrix.go == '1.25'
+        if: matrix.go == '1.26'
         uses: actions/upload-artifact@v7
         with:
           name: coverage-go${{ matrix.go }}
@@ -87,16 +88,16 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: true
           cache-dependency-path: ${{ env.MODULE_DIR }}/go.sum
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          # v2 required: v1.64.8 was built with Go 1.24 and rejects the Go 1.25
-          # toolchain the repo pins (ISI-687). .golangci.yml migrated to v2 schema.
-          version: v2.11.4
+          # v2.12+ is built against Go 1.26 — required after ISI-844 bumped
+          # the module's go directive to 1.26.0 via k8s 0.36 transitive deps.
+          version: v2.12.1
           working-directory: ${{ env.MODULE_DIR }}
           args: --timeout=5m
 
@@ -111,7 +112,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: true
           cache-dependency-path: ${{ env.MODULE_DIR }}/go.sum
 
@@ -144,14 +145,14 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: true
           cache-dependency-path: ${{ env.MODULE_DIR }}/go.sum
 
       - name: Run govulncheck
         uses: golang/govulncheck-action@v1
         with:
-          go-version-input: '1.25'
+          go-version-input: '1.26'
           work-dir: ${{ env.MODULE_DIR }}
 
   trivy-fs:
