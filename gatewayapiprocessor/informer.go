@@ -84,15 +84,23 @@ func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLo
 	}
 	informers = append(informers, policyInformers...)
 
-	// Service-IP informer (ISI-851). Always starts; the index is consulted
-	// only by applyBackendRefFallback when backendref_fallback is enabled, so
-	// users who don't opt in pay the list/watch cost but no enrichment cost.
-	// Phase 2 (EndpointSlice -> PodIP) will plug into the same combinedLookup.
-	svcInformers, ipIndex, err := startServiceInformer(ctx, logger, restCfg, cfg)
-	if err != nil {
-		return nil, nil, fmt.Errorf("start service informer: %w", err)
+	// Service-IP informer (ISI-851). Gated on backendref_fallback.enabled —
+	// the index is only consulted from applyBackendRefFallback, which itself
+	// short-circuits when the feature is off (processor.go:259). Skipping the
+	// informer when the feature is disabled avoids a cluster-scoped list+watch
+	// on core/v1/Services that would stream every Service create/update/delete
+	// to every collector pod for no benefit (Copilot review on PR #55).
+	// Phase 2 (EndpointSlice -> PodIP) will plug into the same combinedLookup
+	// behind the same flag.
+	var ipIndex *serviceIPIndex
+	if cfg.BackendRefFallback.Enabled {
+		var svcInformers []cache.SharedIndexInformer
+		svcInformers, ipIndex, err = startServiceInformer(ctx, logger, restCfg, cfg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("start service informer: %w", err)
+		}
+		informers = append(informers, svcInformers...)
 	}
-	informers = append(informers, svcInformers...)
 
 	syncCtx, cancel := context.WithTimeout(ctx, defaultSyncTimeout(cfg.InformerSyncTimeout))
 	defer cancel()
