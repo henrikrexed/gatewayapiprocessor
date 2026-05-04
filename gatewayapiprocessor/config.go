@@ -115,6 +115,23 @@ type BackendRefFallback struct {
 	// "net.peer.name"] so both modern (1.20+) and legacy OTel sem-conv
 	// resolve. processor-spec §1.3.
 	SourceAttributes []string `mapstructure:"source_attributes"`
+
+	// PodIP toggles the EndpointSlice informer that powers PodIP-literal
+	// fallback resolution (ISI-875). nil = default = enabled, so opting
+	// into BackendRefFallback.Enabled also opts into PodIP coverage. Set
+	// to an explicit false on scale-sensitive clusters where the
+	// cluster-wide EndpointSlice watch is too costly. The Phase 1
+	// ClusterIP path (Service informer) is always on when Enabled=true;
+	// this knob only gates the additional EndpointSlice watch.
+	PodIP *bool `mapstructure:"pod_ip"`
+}
+
+// PodIPEnabled reports whether the EndpointSlice informer that drives the
+// PodIP fallback path should be started. Defaults to true so the feature
+// is on as soon as BackendRefFallback.Enabled flips on; an explicit
+// `pod_ip: false` in YAML disables it.
+func (b BackendRefFallback) PodIPEnabled() bool {
+	return b.PodIP == nil || *b.PodIP
 }
 
 // effectiveSourceAttrs returns the ordered attribute keys this config uses

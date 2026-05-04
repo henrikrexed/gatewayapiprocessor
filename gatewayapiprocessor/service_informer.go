@@ -25,7 +25,6 @@ package gatewayapiprocessor
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -34,7 +33,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -96,6 +94,16 @@ func (s *serviceIPIndex) LookupServiceByIP(ip string) (string, string, bool) {
 // shrink between revisions (a Service that lost dual-stack); we explicitly
 // drop owner-claimed IPs that aren't in the new set so the index doesn't
 // retain stale entries.
+//
+// Conflict policy NOTE (cross-ref to ISI-875 podIPIndex.upsertEndpointSlice):
+// when two Services somehow claim the same IP (a bug or tombstone race —
+// kube enforces ClusterIP uniqueness at the API server, so this shouldn't
+// happen on a healthy cluster), we drop the entry entirely so we never
+// attribute ambiguously. The PodIP index uses last-writer-wins instead,
+// because two EndpointSlices owned by different Services pointing at the
+// same Pod IP is a more recoverable state (and informer events naturally
+// converge to ground truth). The asymmetry between the two indices is
+// deliberate, not an oversight.
 func (s *serviceIPIndex) upsertService(svc *corev1.Service) {
 	if svc == nil {
 		return
@@ -185,6 +193,10 @@ func canonicalIP(raw string) string {
 // can WaitForCacheSync on it alongside the Gateway-API ones) plus the index
 // the processor's fallback path will read from.
 //
+// The caller passes a shared kubernetes.Interface so the Service informer
+// and the EndpointSlice informer (ISI-875) share one HTTP connection pool
+// to the API server instead of each opening their own.
+//
 // Like the gateway-api informers, this honors cfg.Watch.Namespaces — empty
 // means "watch every namespace"; a list scopes one factory per namespace.
 // Resync period mirrors the gateway-api factories so we don't double-pay
@@ -192,14 +204,9 @@ func canonicalIP(raw string) string {
 func startServiceInformer(
 	ctx context.Context,
 	logger *zap.Logger,
-	restCfg *rest.Config,
+	client kubernetes.Interface,
 	cfg *Config,
 ) ([]cache.SharedIndexInformer, *serviceIPIndex, error) {
-	client, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		return nil, nil, fmt.Errorf("build kubernetes clientset: %w", err)
-	}
-
 	resync := cfg.Watch.ResyncPeriod
 	if resync == 0 {
 		resync = 5 * time.Minute

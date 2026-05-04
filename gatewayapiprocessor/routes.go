@@ -93,7 +93,8 @@ type staticLookup struct {
 	backendIndex        map[string]RouteAttributes   // key = "<ns>/<service>"
 	backendIndexAll     map[string][]RouteAttributes // key = "<ns>/<service>" — all candidates (ISI-805)
 	backendIndexDropped map[string]struct{}          // key = "<ns>/<service>" — sticky once-dropped
-	serviceIPs          map[string]nsName            // key = canonical IP literal
+	serviceIPs          map[string]nsName            // key = canonical IP literal — Phase 1 ClusterIP (ISI-851)
+	podIPs              map[string]nsName            // key = canonical IP literal — Phase 2 PodIP (ISI-875)
 }
 
 func newStaticLookup() *staticLookup {
@@ -103,6 +104,7 @@ func newStaticLookup() *staticLookup {
 		backendIndexAll:     make(map[string][]RouteAttributes),
 		backendIndexDropped: make(map[string]struct{}),
 		serviceIPs:          make(map[string]nsName),
+		podIPs:              make(map[string]nsName),
 	}
 }
 
@@ -145,6 +147,18 @@ func (s *staticLookup) putServiceIP(ip, ns, svc string) {
 	s.serviceIPs[canon] = nsName{Namespace: ns, Name: svc}
 }
 
+// putPodIP seeds a PodIP -> (ns, svc) mapping. Tests use this to simulate
+// the EndpointSlice informer cache for the ISI-875 fallback path. The IP
+// is normalized so callers can pass either canonical or non-canonical
+// forms.
+func (s *staticLookup) putPodIP(ip, ns, svc string) {
+	canon := canonicalIP(ip)
+	if canon == "" {
+		return
+	}
+	s.podIPs[canon] = nsName{Namespace: ns, Name: svc}
+}
+
 func (s *staticLookup) LookupRoute(kind RouteKind, ns, name string) (RouteAttributes, bool) {
 	r, ok := s.routes[routeKey(kind, ns, name)]
 	return r, ok
@@ -164,26 +178,33 @@ func (s *staticLookup) LookupByBackendServiceWithParents(ns, service string) ([]
 	return rs, true
 }
 
-// LookupServiceByIP satisfies ServiceIPLookup for tests.
+// LookupServiceByIP satisfies ServiceIPLookup for tests. ClusterIP entries
+// (putServiceIP) take precedence over PodIP entries (putPodIP) when the same
+// canonical IP is registered in both indices, mirroring combinedLookup's
+// production order: a ClusterIP claim is the more specific signal.
 func (s *staticLookup) LookupServiceByIP(ip string) (string, string, bool) {
 	canon := canonicalIP(ip)
 	if canon == "" {
 		return "", "", false
 	}
-	v, ok := s.serviceIPs[canon]
-	if !ok {
-		return "", "", false
+	if v, ok := s.serviceIPs[canon]; ok {
+		return v.Namespace, v.Name, true
 	}
-	return v.Namespace, v.Name, true
+	if v, ok := s.podIPs[canon]; ok {
+		return v.Namespace, v.Name, true
+	}
+	return "", "", false
 }
 
-// combinedLookup glues the route index and the Service-IP index into a single
-// RouteLookup-shaped object so the processor can carry one pointer. The
-// processor's fallback path type-asserts to ServiceIPLookup before consulting
-// the IP index — that lets staticLookup-only tests stay source-compatible.
+// combinedLookup glues the route index, the Service-IP index, and the
+// PodIP index into a single RouteLookup-shaped object so the processor can
+// carry one pointer. The processor's fallback path type-asserts to
+// ServiceIPLookup before consulting the IP indices — that lets
+// staticLookup-only tests stay source-compatible.
 type combinedLookup struct {
 	routes *routeIndex
-	ips    *serviceIPIndex
+	ips    *serviceIPIndex // ISI-851 ClusterIP index
+	pods   *podIPIndex     // ISI-875 EndpointSlice→PodIP index (may be nil)
 }
 
 func (c *combinedLookup) LookupRoute(kind RouteKind, ns, name string) (RouteAttributes, bool) {
@@ -198,11 +219,23 @@ func (c *combinedLookup) LookupByBackendServiceWithParents(ns, service string) (
 	return c.routes.LookupByBackendServiceWithParents(ns, service)
 }
 
+// LookupServiceByIP resolves an IP literal to its (namespace, service) tuple
+// by consulting the ClusterIP index first and then the PodIP index. This
+// order matters: a Service ClusterIP is a more specific signal than a Pod
+// happening to live behind a Service, and in the (rare) case where both
+// indices know an IP we should attribute traffic to the Service-level
+// claim, not to one of its endpoints. Returns ok=false when neither index
+// has the IP or when neither index is configured.
 func (c *combinedLookup) LookupServiceByIP(ip string) (string, string, bool) {
-	if c.ips == nil {
-		return "", "", false
+	if c.ips != nil {
+		if ns, svc, ok := c.ips.LookupServiceByIP(ip); ok {
+			return ns, svc, true
+		}
 	}
-	return c.ips.LookupServiceByIP(ip)
+	if c.pods != nil {
+		return c.pods.LookupPodIP(ip)
+	}
+	return "", "", false
 }
 
 func routeKey(kind RouteKind, ns, name string) string {

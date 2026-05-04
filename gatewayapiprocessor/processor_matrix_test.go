@@ -617,6 +617,71 @@ func TestBackendRefFallback_IPv6ClusterIP_ResolvesViaServiceIPIndex(t *testing.T
 	assert.Equal(t, "backendref_fallback", parser.AsString())
 }
 
+// ISI-875 matrix row: PodIP-literal server.address resolves via the
+// EndpointSlice-backed PodIP index. Phase 1 (ClusterIP) misses the IP, the
+// PodIP fallback picks it up, and the canonical (ns, svc) drives the
+// existing route lookup. The audit bucket this guards is `10.244.77.141`
+// ×1,328 spans/2h on otel-demo (`ad` Pod with no Service-IP match).
+func TestBackendRefFallback_PodIP_ResolvesViaPodIPIndex(t *testing.T) {
+	lookup := newStaticLookup()
+	// Service IP intentionally NOT registered — exercise the PodIP fallback.
+	lookup.putPodIP("10.244.77.141", "otel-demo", "ad")
+	lookup.putBackend("otel-demo", "ad", RouteAttributes{
+		Kind:      RouteKindHTTPRoute,
+		Name:      "ad",
+		Namespace: "otel-demo",
+		UID:       "uid-ad",
+	})
+
+	tp := newTestProcessors(t, lookup, func(c *Config) {
+		c.BackendRefFallback = BackendRefFallback{Enabled: true, SourceAttribute: "server.address"}
+	})
+
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(),
+		singleSpanWith(map[string]string{"server.address": "10.244.77.141"}),
+	))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+	name, ok := attrs.Get(AttrHTTPRouteName)
+	require.True(t, ok, "PodIP literal must resolve via the EndpointSlice index")
+	assert.Equal(t, "ad", name.AsString())
+	parser, _ := attrs.Get(AttrParser)
+	assert.Equal(t, "backendref_fallback", parser.AsString())
+}
+
+// ISI-875 matrix row: ClusterIP wins over PodIP when both indices know the
+// same literal. Pins the combinedLookup precedence in the integration path.
+func TestBackendRefFallback_ClusterIPBeatsPodIP(t *testing.T) {
+	lookup := newStaticLookup()
+	lookup.putServiceIP("10.244.77.141", "otel-demo", "ad-svc")
+	lookup.putPodIP("10.244.77.141", "otel-demo", "ad")
+	lookup.putBackend("otel-demo", "ad-svc", RouteAttributes{
+		Kind:      RouteKindHTTPRoute,
+		Name:      "ad-svc",
+		Namespace: "otel-demo",
+		UID:       "uid-ad-svc",
+	})
+	lookup.putBackend("otel-demo", "ad", RouteAttributes{
+		Kind:      RouteKindHTTPRoute,
+		Name:      "ad",
+		Namespace: "otel-demo",
+		UID:       "uid-ad",
+	})
+
+	tp := newTestProcessors(t, lookup, func(c *Config) {
+		c.BackendRefFallback = BackendRefFallback{Enabled: true, SourceAttribute: "server.address"}
+	})
+
+	require.NoError(t, tp.traces.ConsumeTraces(context.Background(),
+		singleSpanWith(map[string]string{"server.address": "10.244.77.141"}),
+	))
+
+	attrs := getSpanAttrs(t, tp.ts.AllTraces()[0])
+	name, ok := attrs.Get(AttrHTTPRouteName)
+	require.True(t, ok)
+	assert.Equal(t, "ad-svc", name.AsString(), "ClusterIP claim must shadow PodIP claim")
+}
+
 // backendref_fallback (ISI-802 follow-up): bare hostname with resource namespace set,
 // but the (ns, svc) pair has no entry in the route index — still a no-op.
 func TestBackendRefFallback_BareHostname_UnknownService_NoStamp(t *testing.T) {
