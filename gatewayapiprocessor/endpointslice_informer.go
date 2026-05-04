@@ -30,7 +30,6 @@ package gatewayapiprocessor
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -38,7 +37,6 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -100,6 +98,16 @@ func (p *podIPIndex) LookupPodIP(ip string) (string, string, bool) {
 // stale entries. Slices with no resolvable Service owner, FQDN address type,
 // or no Ready endpoints become a no-op (any prior claims for the same owner
 // key are still withdrawn so a slice that loses its owner label cleans up).
+//
+// Conflict policy NOTE (cross-ref to ISI-851 serviceIPIndex.upsertService):
+// when two slices owned by different Services point at the same Pod IP, we
+// keep last-writer-wins. The Service index uses drop-on-conflict instead,
+// because kube enforces ClusterIP uniqueness at the API server, so two
+// Services claiming the same ClusterIP is by definition a bug or
+// tombstone race. PodIP collisions are more recoverable (informer events
+// converge as Pods churn), so a strict drop here would create
+// unnecessarily long enrichment gaps. The asymmetry between the two
+// indices is deliberate.
 func (p *podIPIndex) upsertEndpointSlice(es *discoveryv1.EndpointSlice) {
 	if es == nil {
 		return
@@ -200,9 +208,9 @@ func serviceOwnerOf(es *discoveryv1.EndpointSlice) string {
 	if v, ok := es.Labels[discoveryv1.LabelServiceName]; ok && v != "" {
 		return v
 	}
-	for _, or := range es.OwnerReferences {
-		if or.Kind == "Service" && or.Name != "" {
-			return or.Name
+	for _, ref := range es.OwnerReferences {
+		if ref.Kind == "Service" && ref.Name != "" {
+			return ref.Name
 		}
 	}
 	return ""
@@ -214,6 +222,10 @@ func serviceOwnerOf(es *discoveryv1.EndpointSlice) string {
 // gateway-api / Service ones) plus the index the processor's fallback path
 // will read from.
 //
+// The caller passes a shared kubernetes.Interface so this informer and the
+// Service informer (ISI-851) share one HTTP connection pool to the API
+// server instead of each opening their own.
+//
 // Like the gateway-api informers, this honors cfg.Watch.Namespaces — empty
 // means "watch every namespace"; a list scopes one factory per namespace.
 // Resync period mirrors the other factories so we don't double-pay
@@ -221,14 +233,9 @@ func serviceOwnerOf(es *discoveryv1.EndpointSlice) string {
 func startEndpointSliceInformer(
 	ctx context.Context,
 	logger *zap.Logger,
-	restCfg *rest.Config,
+	client kubernetes.Interface,
 	cfg *Config,
 ) ([]cache.SharedIndexInformer, *podIPIndex, error) {
-	client, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		return nil, nil, fmt.Errorf("build kubernetes clientset: %w", err)
-	}
-
 	resync := cfg.Watch.ResyncPeriod
 	if resync == 0 {
 		resync = 5 * time.Minute

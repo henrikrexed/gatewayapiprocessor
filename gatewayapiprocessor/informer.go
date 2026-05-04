@@ -8,6 +8,7 @@ import (
 
 	"go.uber.org/zap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
@@ -92,11 +93,20 @@ func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLo
 	// to every collector pod for no benefit (Copilot review on PR #55).
 	// Phase 2 (EndpointSlice -> PodIP, ISI-875) plugs into the same
 	// combinedLookup behind the same flag plus the PodIP sub-flag.
+	//
+	// Both informers receive the same kubernetes clientset so they share
+	// one HTTP connection pool to the API server (Copilot review on
+	// PR #66) rather than opening one per informer.
 	var ipIndex *serviceIPIndex
 	var podIndex *podIPIndex
 	if cfg.BackendRefFallback.Enabled {
+		k8sClient, err := kubernetes.NewForConfig(restCfg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("build kubernetes clientset: %w", err)
+		}
+
 		var svcInformers []cache.SharedIndexInformer
-		svcInformers, ipIndex, err = startServiceInformer(ctx, logger, restCfg, cfg)
+		svcInformers, ipIndex, err = startServiceInformer(ctx, logger, k8sClient, cfg)
 		if err != nil {
 			return nil, nil, fmt.Errorf("start service informer: %w", err)
 		}
@@ -107,7 +117,7 @@ func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLo
 		// `backendref_fallback.pod_ip: false` on scale-sensitive clusters.
 		if cfg.BackendRefFallback.PodIPEnabled() {
 			var esInformers []cache.SharedIndexInformer
-			esInformers, podIndex, err = startEndpointSliceInformer(ctx, logger, restCfg, cfg)
+			esInformers, podIndex, err = startEndpointSliceInformer(ctx, logger, k8sClient, cfg)
 			if err != nil {
 				return nil, nil, fmt.Errorf("start endpointslice informer: %w", err)
 			}
