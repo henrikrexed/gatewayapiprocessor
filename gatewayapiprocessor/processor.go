@@ -432,6 +432,11 @@ const resourceAttrK8sNamespace = "k8s.namespace.name"
 // non-empty value that decodes to <svc>.<ns>.* and matches the index wins.
 // Supports both modern sem-conv (server.address, 1.20+) and legacy OTel
 // (net.peer.name) so auto-instrumentation that hasn't migrated still resolves.
+//
+// When the single-candidate index has dropped a (ns, svc) entry as ambiguous,
+// the binary disambiguator (ISI-805) inspects the full candidate set and
+// recovers the legitimate mesh + ingress dual-mode case before giving up. See
+// resolveByBackend / disambiguateBackendCandidates for the rules.
 func (p *gatewayAPIProcessor) applyBackendRefFallback(view combinedView, recordAttrs pcommon.Map, signal signalKind) {
 	keys := p.cfg.BackendRefFallback.effectiveSourceAttrs()
 	if len(keys) == 0 {
@@ -459,7 +464,7 @@ func (p *gatewayAPIProcessor) applyBackendRefFallback(view combinedView, recordA
 		// canonical resolution wins. Failures fall through to splitAddress.
 		if ipLookup != nil && net.ParseIP(addr) != nil {
 			if ns, svc, found := ipLookup.LookupServiceByIP(addr); found {
-				if r, ok := p.lookup.LookupByBackendService(ns, svc); ok {
+				if r, ok := p.resolveByBackend(view, ns, svc); ok {
 					ra = r
 					matched = true
 					break
@@ -484,7 +489,7 @@ func (p *gatewayAPIProcessor) applyBackendRefFallback(view combinedView, recordA
 				continue
 			}
 		}
-		if r, ok := p.lookup.LookupByBackendService(ns, svc); ok {
+		if r, ok := p.resolveByBackend(view, ns, svc); ok {
 			ra = r
 			matched = true
 			break
@@ -597,6 +602,95 @@ func stripPort(host string) string {
 		return host[:i]
 	}
 	return host
+}
+
+// resolveByBackend looks up the route(s) claiming (ns, svc) and returns the
+// single best candidate. The fast path uses LookupByBackendService; on a miss
+// (which means "either no claim or ambiguous-drop") it falls through to the
+// binary disambiguator on LookupByBackendServiceWithParents (ISI-805).
+//
+// Returning (_, false) means no candidate could be safely attributed — the
+// caller must not stamp.
+//
+// The `len(candidates) < 2` early-out below is a defensive cheap-path: in
+// production routeIndex never has a `LookupByBackendService` miss combined
+// with a single-candidate `LookupByBackendServiceWithParents` hit (every owner
+// in `backendOwners` also lives in `backendIndex` until ambiguity drops it),
+// but staticLookup-only test fixtures can synthesize that shape, so we guard
+// it here rather than rely on `disambiguateBackendCandidates`'s own
+// `len(candidates) != 2` check producing a false return for that case.
+func (p *gatewayAPIProcessor) resolveByBackend(view combinedView, ns, svc string) (RouteAttributes, bool) {
+	if r, ok := p.lookup.LookupByBackendService(ns, svc); ok {
+		return r, true
+	}
+	candidates, ok := p.lookup.LookupByBackendServiceWithParents(ns, svc)
+	if !ok || len(candidates) < 2 {
+		return RouteAttributes{}, false
+	}
+	return disambiguateBackendCandidates(view, candidates)
+}
+
+// disambiguateBackendCandidates implements the binary mesh-vs-ingress
+// disambiguator from the ISI-805 plan. It returns a stamp candidate only when
+// EXACTLY ONE mesh and ONE ingress candidate share the backend Service:
+//
+//  1. Partition candidates by RouteMode (empty defaults to ingress for
+//     back-compat). Reject any input that isn't 1-mesh + 1-ingress — same-mode
+//     pairs and >2 candidates preserve the existing no-stamp safety contract
+//     (TestBackendRefFallback_AmbiguousOwner_NoStamp).
+//  2. If the span's resource k8s.namespace.name matches the mesh candidate's
+//     parent Service namespace, prefer the mesh candidate (the span is running
+//     inside the mesh's east-west fabric).
+//  3. Otherwise prefer the ingress candidate.
+func disambiguateBackendCandidates(view combinedView, candidates []RouteAttributes) (RouteAttributes, bool) {
+	if len(candidates) != 2 {
+		return RouteAttributes{}, false
+	}
+	var mesh, ingress *RouteAttributes
+	for i := range candidates {
+		switch candidateRouteMode(candidates[i]) {
+		case RouteModeMesh:
+			if mesh != nil {
+				// Two mesh candidates — within-kind ambiguity, no stamp.
+				return RouteAttributes{}, false
+			}
+			mesh = &candidates[i]
+		case RouteModeIngress:
+			if ingress != nil {
+				return RouteAttributes{}, false
+			}
+			ingress = &candidates[i]
+		}
+	}
+	if mesh == nil || ingress == nil {
+		return RouteAttributes{}, false
+	}
+	// Default decision is ingress. Flip to mesh only when the span runs in the
+	// same namespace as the mesh route's parent Service — that's the deciding
+	// signal for east-west traffic in GAMMA.
+	if mesh.ParentServiceNamespace != "" {
+		if resNs, ok := view.Get(resourceAttrK8sNamespace); ok && resNs == mesh.ParentServiceNamespace {
+			return *mesh, true
+		}
+	}
+	return *ingress, true
+}
+
+// candidateRouteMode normalizes RouteAttributes.RouteMode for the
+// disambiguator: empty defaults to ingress (matches stampRouteAttrs back-compat
+// behaviour), unknown values fall through unchanged.
+//
+// Any value that is neither RouteModeMesh nor RouteModeIngress causes
+// disambiguateBackendCandidates to abstain — neither bucket gets populated, so
+// the post-loop `mesh == nil || ingress == nil` guard returns no-stamp. This
+// is the safe default for forward-compat: a future RouteMode (e.g. a
+// hypothetical "egress" or "shadow") added without updating the disambiguator
+// fails closed rather than mis-attributing.
+func candidateRouteMode(ra RouteAttributes) string {
+	if ra.RouteMode == "" {
+		return RouteModeIngress
+	}
+	return ra.RouteMode
 }
 
 // splitAddress extracts (namespace, service) from a Kubernetes Service DNS

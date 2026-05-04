@@ -158,6 +158,57 @@ Best-effort enrichment used when no HTTPRoute match is resolved but a
 | `enabled`          | bool   | `true`           | Enable backendRef fallback.                                                       |
 | `source_attribute` | string | `server.address` | Attribute key read for the fallback hint (e.g. the downstream service address).  |
 
+### Mesh + ingress disambiguation (v0.3, ISI-805)
+
+When a single Service is the backend of both a GAMMA mesh-mode route
+(`parentRef.kind = Service`) and an ingress-mode route
+(`parentRef.kind = Gateway`), the single-candidate index drops the entry as
+ambiguous. The processor then runs a binary disambiguator on the candidate
+set:
+
+1. **Both candidates same parent kind** (mesh+mesh or ingress+ingress) → no
+   stamp. The original "never mis-attribute when ambiguous" safety contract is
+   preserved (`TestBackendRefFallback_AmbiguousOwner_NoStamp`).
+2. **Three or more candidates** → no stamp. Disambiguation only kicks in for
+   the binary mesh+ingress topology — anything beyond that is still treated as
+   ambiguous.
+3. **Exactly one mesh + one ingress candidate** → the disambiguator inspects
+   the span's `k8s.namespace.name` resource attribute:
+   - if it matches the mesh route's `parentRef` Service namespace, the **mesh
+     route** is stamped (the span is running inside the mesh's east-west
+     fabric);
+   - otherwise the **ingress route** is stamped (the default — ingress is the
+     correct attribution for cross-cluster / north-south spans, including the
+     case where a span carries no resource namespace at all).
+
+Worked example — the otel-demo `frontend-proxy` Service is referenced by:
+
+```yaml
+# GAMMA mesh route
+spec:
+  parentRefs:
+    - kind: Service
+      name: frontend-proxy
+  rules:
+    - backendRefs:
+        - name: frontend-proxy
+# Ingress route
+spec:
+  parentRefs:
+    - kind: Gateway
+      name: oteldemo-ingress
+  rules:
+    - backendRefs:
+        - name: frontend-proxy
+```
+
+A span emitted by a workload running in `otel-demo` and pointed at
+`frontend-proxy.otel-demo.svc.cluster.local` is stamped with the mesh route
+(`gateway.networking.k8s.io/route-mode = mesh` + `k8s.service.parent.*`). A
+span originating outside `otel-demo` (or with no `k8s.namespace.name` resource
+attribute) is stamped with the ingress route
+(`gateway.networking.k8s.io/route-mode = ingress` + `k8s.gateway.*`).
+
 ## Validation rules
 
 Enforced by `Config.Validate()` at component startup:

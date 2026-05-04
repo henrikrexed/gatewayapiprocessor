@@ -6,6 +6,24 @@ All notable changes to `gatewayapiprocessor` are tracked here. This file follows
 
 ## [Unreleased]
 
+### Added
+
+- **parentRef-aware disambiguation when a Service is shared by mesh and ingress
+  routes** (ISI-805). `routeIndex.LookupByBackendServiceWithParents` exposes the
+  full owner set when the single-candidate `backendIndex` would otherwise drop
+  an entry as ambiguous. `applyBackendRefFallback` runs a binary disambiguator
+  on the candidate set: if exactly one mesh-mode (`parentRef.kind=Service`) and
+  one ingress-mode (`parentRef.kind=Gateway`) route share the backend, the
+  span's `k8s.namespace.name` resource attribute decides which to stamp —
+  matching the mesh route's parent Service namespace stamps mesh, otherwise
+  ingress. Same-mode pairs (mesh+mesh, ingress+ingress) and >2 candidates
+  preserve the existing no-stamp safety contract
+  (`TestBackendRefFallback_AmbiguousOwner_NoStamp`). Recovers the otel-demo
+  `frontend-proxy` topology where one HTTPRoute is mesh and another is ingress
+  for the same backend Service. Fully test-covered by the 6-case matrix in
+  `processor_disambiguation_test.go`. See
+  [docs/configuration.md#mesh--ingress-disambiguation-v03-isi-805](docs/configuration.md).
+
 ### Changed
 
 - **OTel Collector upgrade — v0.124.0 → v0.150.0** (ISI-687, parent ISI-679).
