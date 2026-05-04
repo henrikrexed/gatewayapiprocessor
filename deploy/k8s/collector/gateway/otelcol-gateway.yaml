@@ -182,6 +182,27 @@ spec:
             statements:
               - set(attributes["service.namespace"], attributes["k8s.namespace.name"]) where attributes["service.namespace"] == nil and attributes["k8s.namespace.name"] != nil
 
+      # ISI-836 — make OBI-emitted spans queryable in Dynatrace.
+      #
+      # OBI sets resource attribute `telemetry.distro.name =
+      # "opentelemetry-ebpf-instrumentation"` on every span, but Dynatrace
+      # Grail's `spans` table does not index that attribute as a queryable
+      # column, so DQL filters against it return zero rows even though the
+      # spans physically arrive at the tenant. DT does index `service.name`,
+      # so we suffix it (`<original>-obi`) on the OBI side. Trade-off: this
+      # creates parallel Smartscape entities (`shipping`, `shipping-obi`),
+      # which is exactly what the OBI-vs-SDK comparison demo wants.
+      #
+      # MUST run BEFORE `tail_sampling` so the suffix is in place when the
+      # sampler looks at the trace. Pipeline order is enforced in
+      # service.pipelines.traces.processors below.
+      transform/mark-obi:
+        error_mode: ignore
+        trace_statements:
+          - context: resource
+            statements:
+              - set(attributes["service.name"], Concat([attributes["service.name"], "-obi"], "")) where attributes["telemetry.distro.name"] == "opentelemetry-ebpf-instrumentation"
+
       # Tail sampling — kept inline so the CR is self-describing. Logic
       # mirrors deploy/k8s/collector/gateway/tail-sampling.snippet.yaml;
       # change BOTH places together.
@@ -249,6 +270,7 @@ spec:
             - memory_limiter
             - gatewayapi
             - transform
+            - transform/mark-obi
             - tail_sampling
             - batch
           exporters: [otlphttp/dynatrace]
