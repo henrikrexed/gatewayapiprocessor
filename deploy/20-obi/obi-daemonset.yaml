@@ -24,6 +24,30 @@
 #     hand-patched the DaemonSet to the correct name. Aligning the repo here
 #     so future `kubectl apply -f deploy/20-obi/` does not regress.
 #
+# Service discovery (ISI-836 spans-fix):
+#   - OBI v0.8.0 only starts its application instrumenter (the component that
+#     produces spans + RED metrics) when at least one discovery selector is
+#     configured. Without one it silently runs in network-flows-only mode —
+#     exactly the live signature observed before this fix:
+#       INFO  starting OBI in Network metrics mode
+#       INFO  Flows agent successfully started
+#       (no `application instrumenter` line, no `discovered process` line)
+#   - Per OBI service-discovery docs
+#     (https://opentelemetry.io/docs/zero-code/obi/configure/service-discovery/),
+#     namespace-scoped selection is YAML-only. There is NO single env var
+#     equivalent (the basic env vars cover only OTEL_EBPF_AUTO_TARGET_EXE /
+#     OTEL_EBPF_OPEN_PORT / OTEL_EBPF_AUTO_TARGET_LANGUAGE / OTEL_EBPF_TARGET_PID).
+#     We therefore mount a small YAML config via OTEL_EBPF_CONFIG_PATH that
+#     pins the selector to the `otel-demo` namespace.
+#   - Scope choice — narrow (otel-demo only) over cluster-wide:
+#       * matches the demo storyline (otel-demo is the only workload the board
+#         needs to see in Smartscape; control planes are out of scope)
+#       * avoids instrumenting cert-manager / kgateway / istio-system /
+#         dynatrace operator and other CP workloads where eBPF probes have no
+#         business value and can mask real CP signals
+#       * keeps cardinality predictable; expanding later is a one-line change
+#         to the ConfigMap (add another `k8s_namespace:` entry)
+#
 # Export wiring:
 #   - Per OBI export-data docs (https://opentelemetry.io/docs/zero-code/obi/configure/export-data/),
 #     a single `OTEL_EXPORTER_OTLP_ENDPOINT` enables traces + metrics. OBI does
@@ -80,6 +104,24 @@ subjects:
     name: obi
     namespace: obi-system
 ---
+# OBI YAML config — discovery selector only.
+# Everything else stays on env vars (simpler ops surface). The discovery
+# selector has to live here because OBI v0.8.0 has no env var that takes a
+# JSON-array list of selectors (see file header for the doc reference).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: obi-config
+  namespace: obi-system
+data:
+  config.yaml: |
+    discovery:
+      # Instrument every process running in the otel-demo namespace.
+      # Add more entries here (one per namespace) to widen scope without a
+      # DaemonSet rollout — OBI watches the ConfigMap mount and reloads.
+      instrument:
+        - k8s_namespace: otel-demo
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -116,6 +158,12 @@ spec:
                 - BPF
                 - PERFMON
           env:
+            # Path to the YAML config mounted from the obi-config ConfigMap.
+            # Carries the discovery selector that activates the application
+            # instrumenter (which produces spans + RED metrics). Without this
+            # OBI silently runs in network-flows-only mode.
+            - name: OTEL_EBPF_CONFIG_PATH
+              value: "/etc/obi/config.yaml"
             # Ship to the per-node agent collector (split-topology lives in
             # deploy/k8s/collector/, see file header). The agent does
             # k8sattributes + trace-ID-affinity load balancing into the
@@ -156,6 +204,9 @@ spec:
             - name: proc
               mountPath: /host/proc
               readOnly: true
+            - name: obi-config
+              mountPath: /etc/obi
+              readOnly: true
       volumes:
         - name: sys
           hostPath:
@@ -163,3 +214,6 @@ spec:
         - name: proc
           hostPath:
             path: /proc
+        - name: obi-config
+          configMap:
+            name: obi-config
