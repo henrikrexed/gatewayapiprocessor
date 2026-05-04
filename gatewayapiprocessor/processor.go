@@ -606,11 +606,19 @@ func stripPort(host string) string {
 
 // resolveByBackend looks up the route(s) claiming (ns, svc) and returns the
 // single best candidate. The fast path uses LookupByBackendService; on a miss
-// (which currently means "either no claim or ambiguous-drop") it falls through
-// to the binary disambiguator on LookupByBackendServiceWithParents (ISI-805).
+// (which means "either no claim or ambiguous-drop") it falls through to the
+// binary disambiguator on LookupByBackendServiceWithParents (ISI-805).
 //
 // Returning (_, false) means no candidate could be safely attributed — the
 // caller must not stamp.
+//
+// The `len(candidates) < 2` early-out below is a defensive cheap-path: in
+// production routeIndex never has a `LookupByBackendService` miss combined
+// with a single-candidate `LookupByBackendServiceWithParents` hit (every owner
+// in `backendOwners` also lives in `backendIndex` until ambiguity drops it),
+// but staticLookup-only test fixtures can synthesize that shape, so we guard
+// it here rather than rely on `disambiguateBackendCandidates`'s own
+// `len(candidates) != 2` check producing a false return for that case.
 func (p *gatewayAPIProcessor) resolveByBackend(view combinedView, ns, svc string) (RouteAttributes, bool) {
 	if r, ok := p.lookup.LookupByBackendService(ns, svc); ok {
 		return r, true
@@ -671,6 +679,13 @@ func disambiguateBackendCandidates(view combinedView, candidates []RouteAttribut
 // candidateRouteMode normalizes RouteAttributes.RouteMode for the
 // disambiguator: empty defaults to ingress (matches stampRouteAttrs back-compat
 // behaviour), unknown values fall through unchanged.
+//
+// Any value that is neither RouteModeMesh nor RouteModeIngress causes
+// disambiguateBackendCandidates to abstain — neither bucket gets populated, so
+// the post-loop `mesh == nil || ingress == nil` guard returns no-stamp. This
+// is the safe default for forward-compat: a future RouteMode (e.g. a
+// hypothetical "egress" or "shadow") added without updating the disambiguator
+// fails closed rather than mis-attributing.
 func candidateRouteMode(ra RouteAttributes) string {
 	if ra.RouteMode == "" {
 		return RouteModeIngress

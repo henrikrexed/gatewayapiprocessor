@@ -290,6 +290,31 @@ func TestStaticLookup_LookupByBackendServiceWithParents(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// Regression for PR #65 review: a 3rd putBackend on an already-dropped key
+// must NOT re-insert the candidate into the single-candidate index.
+// routeIndex.reindexBackends keeps the first owner pinned in claimedBackends
+// and drops backendIndex[bkey] for 2nd+ owners; staticLookup must match.
+func TestStaticLookup_PutBackend_3rdOwnerStaysDropped(t *testing.T) {
+	lookup := newStaticLookup()
+	a := disambigMeshRoute()
+	a.Name = "owner-a"
+	b := disambigIngressRoute()
+	b.Name = "owner-b"
+	c := disambigIngressRoute()
+	c.Name = "owner-c"
+
+	lookup.putBackend(otelDemo, frontendProxy, a)
+	lookup.putBackend(otelDemo, frontendProxy, b)
+	lookup.putBackend(otelDemo, frontendProxy, c) // 3rd — must not re-insert
+
+	_, ok := lookup.LookupByBackendService(otelDemo, frontendProxy)
+	assert.False(t, ok, "single-candidate index must stay empty once dropped, even after 3+ putBackend calls")
+
+	got, ok := lookup.LookupByBackendServiceWithParents(otelDemo, frontendProxy)
+	require.True(t, ok)
+	assert.Len(t, got, 3, "all 3 candidates must be visible to the disambiguator")
+}
+
 // Update path: when a route's backendRefs change to no longer claim a Service,
 // the multi-owner set must release the stale entry.
 func TestRouteIndex_LookupByBackendServiceWithParents_ReleasesStaleOnUpdate(t *testing.T) {
