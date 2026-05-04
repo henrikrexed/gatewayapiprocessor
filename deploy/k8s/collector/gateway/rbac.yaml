@@ -44,6 +44,16 @@ rules:
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list", "watch"]
+  # gatewayapiprocessor PodIP reverse-lookup informer (ISI-875, Phase 2 of
+  # ISI-851). The EndpointSlice informer maintains a PodIP -> (namespace,
+  # service) index used by backendref_fallback whenever the ClusterIP
+  # index misses — this is what catches PodIP-literal `server.address`
+  # values emitted by legacy SDKs hitting in-cluster traffic (e.g.
+  # otel-demo `ad` at 10.244.77.141). Same gateway-tier-only posture as
+  # the Service watch above.
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
   # emit_status_conditions — status subresources.
   - apiGroups: ["gateway.networking.k8s.io"]
     resources:
