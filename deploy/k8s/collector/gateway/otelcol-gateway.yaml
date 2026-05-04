@@ -55,8 +55,14 @@ spec:
     limits:
       cpu: 500m
       memory: 512Mi
+  # Service port names follow istio's protocol-selection prefixes
+  # (https://istio.io/latest/docs/ops/configuration/traffic-management/protocol-selection/).
+  # `grpc-*` is required so istio renders the upstream cluster with
+  # explicit_http_config.http2_protocol_options — without this, internal
+  # Envoy clients (e.g. the waypoint OTel tracer) fall back to HTTP/1.1
+  # and the collector's gRPC handler never sees the request (ISI-876).
   ports:
-    - name: otlp-grpc
+    - name: grpc-otlp
       port: 4317
       protocol: TCP
     - name: otlp-http
