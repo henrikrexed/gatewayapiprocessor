@@ -229,7 +229,7 @@ jobs:
 
       - name: Build and push (linux amd64, arm64, arm/v7, ppc64le, s390x)
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
