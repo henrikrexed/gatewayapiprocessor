@@ -71,6 +71,7 @@ func TestEndpointSliceIPSet_DualStack(t *testing.T) {
 	// IPv6 lookup must work in canonicalized form.
 	ns, name, ok = idx.LookupPodIP("fd00:0000:0000:0000:0000:0000:0000:beef")
 	require.True(t, ok, "IPv6 PodIP must resolve regardless of textual form")
+	assert.Equal(t, "otel-demo", ns)
 	assert.Equal(t, "ad", name)
 }
 
