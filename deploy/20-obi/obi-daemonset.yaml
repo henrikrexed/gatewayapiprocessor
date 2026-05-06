@@ -113,8 +113,13 @@ kind: ConfigMap
 metadata:
   name: obi-config
   namespace: obi-system
-data:
+  data:
   config.yaml: |
+    ebpf:
+      # Enable W3C Trace Context propagation at network level so OBI
+      # produces multi-span traces across service boundaries. Mirrors
+      # the OTEL_EBPF_BPF_CONTEXT_PROPAGATION=all env var.
+      context_propagation: 'all'
     discovery:
       # Instrument every process running in the otel-demo namespace.
       # Add more entries here (one per namespace) to widen scope without a
@@ -197,6 +202,13 @@ spec:
               value: "true"
             - name: OTEL_EBPF_DISCOVERY_POLL_INTERVAL
               value: "5s"
+            # Context propagation at network level (disabled by default in OBI).
+            # Without this OBI creates single-span traces because it cannot
+            # propagate W3C Trace Context across service boundaries at the
+            # eBPF layer.  'all' enables both HTTP and gRPC header injection.
+            # See: https://opentelemetry.io/docs/zero-code/obi/configure/export-modes/
+            - name: OTEL_EBPF_BPF_CONTEXT_PROPAGATION
+              value: "all"
           volumeMounts:
             - name: sys
               mountPath: /sys
