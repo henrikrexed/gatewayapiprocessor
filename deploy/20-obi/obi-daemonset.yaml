@@ -113,17 +113,11 @@ kind: ConfigMap
 metadata:
   name: obi-config
   namespace: obi-system
-  data:
+data:
   config.yaml: |
     ebpf:
-      # Enable W3C Trace Context propagation at network level so OBI
-      # produces multi-span traces across service boundaries. Mirrors
-      # the OTEL_EBPF_BPF_CONTEXT_PROPAGATION=all env var.
       context_propagation: 'all'
     discovery:
-      # Instrument every process running in the otel-demo namespace.
-      # Add more entries here (one per namespace) to widen scope without a
-      # DaemonSet rollout — OBI watches the ConfigMap mount and reloads.
       instrument:
         - k8s_namespace: otel-demo
 ---
