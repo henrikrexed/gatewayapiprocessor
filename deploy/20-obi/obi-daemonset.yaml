@@ -1,4 +1,4 @@
-# OBI (opentelemetry-ebpf-instrumentation) — pinned v0.8.0.
+# OBI (OpenTelemetry eBPF Instrumentation) — pinned v0.8.0.
 # Kernel-side eBPF auto-instrumentation; carries k8s.pod.*/k8s.node.* via
 # its k8s metadata enrichment so the processor can correlate with HTTPRoute
 # bindings.
