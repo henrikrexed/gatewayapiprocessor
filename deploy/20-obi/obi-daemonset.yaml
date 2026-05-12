@@ -113,7 +113,7 @@ kind: ConfigMap
 metadata:
   name: obi-config
   namespace: obi-system
-  data:
+data:
   config.yaml: |
     ebpf:
       # Enable W3C Trace Context propagation at network level so OBI
