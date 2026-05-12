@@ -113,13 +113,26 @@ kind: ConfigMap
 metadata:
   name: obi-config
   namespace: obi-system
-  data:
+data:
   config.yaml: |
     ebpf:
-      # Enable W3C Trace Context propagation at network level so OBI
-      # produces multi-span traces across service boundaries. Mirrors
-      # the OTEL_EBPF_BPF_CONTEXT_PROPAGATION=all env var.
+      # W3C Trace Context propagation knobs (both needed for multi-hop traces).
+      # Per https://opentelemetry.io/docs/zero-code/obi/configure/metrics-traces-attributes/
+      #
+      # context_propagation values: 'headers' (alias 'http'), 'tcp', 'all'
+      # (= headers,tcp), 'disabled'. 'all' means: inject Traceparent into
+      # plaintext HTTP/1.1 + gRPC via uprobes AND encode it at TCP packet
+      # level for TLS/HTTPS flows. Note: gRPC and HTTP/2 are NOT supported
+      # by the tcp mode (header-injection via uprobes still applies for
+      # plaintext gRPC). Mirrored by OTEL_EBPF_BPF_CONTEXT_PROPAGATION=all.
       context_propagation: 'all'
+      # CRITICAL for connected traces: with the default (false), OBI ignores
+      # incoming Traceparent headers and starts a brand-new root trace at
+      # every hop — producing the "spans but disconnected" signature. Set
+      # true so OBI inherits the upstream trace_id from incoming requests
+      # (works for both OBI-injected traceparents and SDK-emitted ones).
+      # Mirrored by OTEL_EBPF_BPF_TRACK_REQUEST_HEADERS=true on the DaemonSet.
+      track_request_headers: true
     discovery:
       # Instrument every process running in the otel-demo namespace.
       # Add more entries here (one per namespace) to widen scope without a
@@ -203,12 +216,24 @@ spec:
             - name: OTEL_EBPF_DISCOVERY_POLL_INTERVAL
               value: "5s"
             # Context propagation at network level (disabled by default in OBI).
-            # Without this OBI creates single-span traces because it cannot
-            # propagate W3C Trace Context across service boundaries at the
-            # eBPF layer.  'all' enables both HTTP and gRPC header injection.
-            # See: https://opentelemetry.io/docs/zero-code/obi/configure/export-modes/
+            # 'all' = 'headers,tcp'. The 'headers' mode injects W3C
+            # Traceparent into plaintext HTTP/1.1 + gRPC via uprobes; the
+            # 'tcp' mode encodes Traceparent at the TCP/IP packet level
+            # using Linux Traffic Control (for HTTPS/TLS flows). Note: the
+            # tcp mode does NOT support gRPC / HTTP/2 — those rely on the
+            # header-injection path. Mirrors `ebpf.context_propagation`
+            # in the ConfigMap.
+            # See: https://opentelemetry.io/docs/zero-code/obi/configure/metrics-traces-attributes/
             - name: OTEL_EBPF_BPF_CONTEXT_PROPAGATION
               value: "all"
+            # Trace continuity (default false). Without this OBI ignores
+            # incoming Traceparent and starts a new root span at every
+            # service it instruments — exactly the "spans but not
+            # connected" signature seen on observable-gateapiprocess
+            # before this PR. Mirrors `ebpf.track_request_headers` in the
+            # ConfigMap.
+            - name: OTEL_EBPF_BPF_TRACK_REQUEST_HEADERS
+              value: "true"
           volumeMounts:
             - name: sys
               mountPath: /sys
