@@ -202,6 +202,8 @@ spec:
             # only if a specific protocol becomes a CPU hot spot.
             - name: OTEL_EBPF_TRACES_INSTRUMENTATIONS
               value: "*"
+            - name: OTEL_EBPF_HEURISTIC_SQL_DETECT	
+              value: "true"
             - name: OTEL_EBPF_METRICS_INSTRUMENTATIONS
               value: "*"
             # `application` = HTTP/gRPC RED summaries; `network` = per-flow
@@ -233,6 +235,8 @@ spec:
             # before this PR. Mirrors `ebpf.track_request_headers` in the
             # ConfigMap.
             - name: OTEL_EBPF_BPF_TRACK_REQUEST_HEADERS
+              value: "true"
+            - name: OTEL_EBPF_HTTP_ENRICHMENT_ENABLED
               value: "true"
           volumeMounts:
             - name: sys
