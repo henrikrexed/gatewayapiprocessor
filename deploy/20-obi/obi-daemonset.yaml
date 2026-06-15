@@ -133,6 +133,30 @@ data:
       # (works for both OBI-injected traceparents and SDK-emitted ones).
       # Mirrored by OTEL_EBPF_BPF_TRACK_REQUEST_HEADERS=true on the DaemonSet.
       track_request_headers: true
+    # Attribute enrichment for network-flow metrics (ISI-1014).
+    # Per OBI docs, network-flow series default to opaque L4 IP/port quadruples,
+    # which makes it impossible to pivot from a Dynatrace network anomaly to the
+    # owning k8s workload/service. We add k8s identity instead.
+    #   - Metric key is the internal name `obi_network_flow_bytes` (OTel name is
+    #     `obi.network.flow.bytes`).
+    #   - `k8s.src.*` / `k8s.dst.*` wildcards capture namespace/name/owner.name.
+    #     Wildcard syntax + these attribute names verified against
+    #     https://opentelemetry.io/docs/zero-code/obi/metrics/ and
+    #     .../configure/metrics-traces-attributes/ on 2026-06-15.
+    #   - Cardinality impact ~0: the k8s identity dims are 1:1 derivations of the
+    #     src/dst IPs already on each series, so they do NOT multiply the series
+    #     count — we replace opaque L4 dims with meaningful identity (see the
+    #     ISI-1014 plan sizing table).
+    attributes:
+      select:
+        obi_network_flow_bytes:
+          include:
+            - k8s.src.*
+            - k8s.dst.*
+            - src.address
+            - dst.address
+            - src.port
+            - dst.port
     discovery:
       # Instrument every process running in the otel-demo namespace.
       # Add more entries here (one per namespace) to widen scope without a
@@ -202,16 +226,21 @@ spec:
             # only if a specific protocol becomes a CPU hot spot.
             - name: OTEL_EBPF_TRACES_INSTRUMENTATIONS
               value: "*"
-            - name: OTEL_EBPF_HEURISTIC_SQL_DETECT	
+            - name: OTEL_EBPF_HEURISTIC_SQL_DETECT
               value: "true"
             - name: OTEL_EBPF_METRICS_INSTRUMENTATIONS
               value: "*"
             # `application` = HTTP/gRPC RED summaries; `network` = per-flow
             # network metrics from the OBI Flows agent. Tail sampling at the
-            # gateway tier absorbs the cardinality. Span-derived metrics and
-            # service-graph features stay off pending sizing review.
+            # gateway tier absorbs the cardinality.
+            # `application_service_graph` emits traces_service_graph_request_*
+            # metrics so Dynatrace Smartscape can draw service-to-service edges
+            # (ISI-1014). Sizing review is done: scope stays otel-demo only, so
+            # the service graph is bounded to ~30-40 real edges (~+150 series) —
+            # negligible vs DT ingest budget. Span-derived metrics
+            # (`application_span`) stay off pending a separate sizing review.
             - name: OTEL_EBPF_METRICS_FEATURES
-              value: "network,application"
+              value: "network,application,application_service_graph"
             # K8s metadata enrichment + discovery cadence (OBI v0.8.0 prefix).
             - name: OTEL_EBPF_KUBE_METADATA_ENABLE
               value: "true"
