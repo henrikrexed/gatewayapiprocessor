@@ -3,7 +3,7 @@ module github.com/henrikrexed/gatewayapiprocessor/gatewayapiprocessor
 go 1.26.0
 
 require (
-	github.com/stretchr/testify v1.11.1
+	github.com/stretchr/testify v1.12.0
 	go.opentelemetry.io/collector/component v1.59.0
 	go.opentelemetry.io/collector/component/componenttest v0.153.0
 	go.opentelemetry.io/collector/consumer v1.59.0
