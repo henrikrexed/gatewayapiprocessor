@@ -66,6 +66,91 @@ type nsName struct {
 	Name      string
 }
 
+// Istio ambient-mesh labels that select a waypoint for a Service (GAMMA
+// label-based waypoint resolution, ISI-6178 §4.3 / D5). `use-waypoint` names
+// the waypoint (value "none" explicitly opts out); `use-waypoint-namespace`
+// optionally points at a waypoint in a different namespace.
+const (
+	labelUseWaypoint    = "istio.io/use-waypoint"
+	labelUseWaypointNS  = "istio.io/use-waypoint-namespace"
+	useWaypointDisabled = "none"
+)
+
+// WaypointLookup resolves the waypoint serving a given Service from the Service
+// informer's label cache (D5). Returns ok=false when the Service is unknown or
+// carries no (enabled) istio.io/use-waypoint label. Implemented by
+// *waypointIndex (production) and *staticLookup (tests); consulted via a
+// type-assertion so lookups that predate waypoint support stay
+// source-compatible.
+type WaypointLookup interface {
+	LookupWaypointForService(namespace, name string) (implementation, waypointName, waypointNamespace string, ok bool)
+}
+
+// waypointInfo is the resolved waypoint for a Service.
+type waypointInfo struct {
+	Implementation string
+	Name           string
+	Namespace      string
+}
+
+// waypointIndex maps a Service (ns/name) to the waypoint it selects via the
+// istio.io/use-waypoint label. Maintained by the Service informer handler
+// alongside serviceIPIndex (one watch, two indexes — D5). Reads happen on the
+// signal pipeline; writes on informer goroutines, so an RWMutex keeps
+// go test -race clean.
+type waypointIndex struct {
+	mu sync.RWMutex
+	m  map[string]waypointInfo // key = "ns/name"
+}
+
+func newWaypointIndex() *waypointIndex {
+	return &waypointIndex{m: make(map[string]waypointInfo)}
+}
+
+// LookupWaypointForService satisfies WaypointLookup.
+func (w *waypointIndex) LookupWaypointForService(ns, name string) (string, string, string, bool) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	wi, ok := w.m[ns+"/"+name]
+	if !ok {
+		return "", "", "", false
+	}
+	return wi.Implementation, wi.Name, wi.Namespace, true
+}
+
+// upsertService (re)derives the waypoint entry for a Service from its labels.
+// A Service that drops the label (or sets it to "none") has its entry removed.
+func (w *waypointIndex) upsertService(svc *corev1.Service) {
+	if svc == nil {
+		return
+	}
+	key := svc.Namespace + "/" + svc.Name
+	wp := svc.Labels[labelUseWaypoint]
+	if wp == "" || wp == useWaypointDisabled {
+		w.mu.Lock()
+		delete(w.m, key)
+		w.mu.Unlock()
+		return
+	}
+	wpNS := svc.Labels[labelUseWaypointNS]
+	if wpNS == "" {
+		wpNS = svc.Namespace
+	}
+	w.mu.Lock()
+	w.m[key] = waypointInfo{
+		Implementation: WaypointImplIstioAmbient,
+		Name:           wp,
+		Namespace:      wpNS,
+	}
+	w.mu.Unlock()
+}
+
+func (w *waypointIndex) deleteService(ns, name string) {
+	w.mu.Lock()
+	delete(w.m, ns+"/"+name)
+	w.mu.Unlock()
+}
+
 func newServiceIPIndex() *serviceIPIndex {
 	return &serviceIPIndex{
 		m:     make(map[string]nsName),
@@ -201,18 +286,34 @@ func canonicalIP(raw string) string {
 // means "watch every namespace"; a list scopes one factory per namespace.
 // Resync period mirrors the gateway-api factories so we don't double-pay
 // list/relist cost.
+//
+// The two indexes are built independently so the informer only pays for what
+// the enabled features need (D5): buildIP toggles the ClusterIP reverse-lookup
+// index (backendref_fallback) and buildWaypoint toggles the use-waypoint label
+// cache (GAMMA waypoint attribution). Either (or both) may be nil in the
+// returned tuple when its feature is off; a non-nil pair shares one Service
+// watch.
 func startServiceInformer(
 	ctx context.Context,
 	logger *zap.Logger,
 	client kubernetes.Interface,
 	cfg *Config,
-) ([]cache.SharedIndexInformer, *serviceIPIndex, error) {
+	buildIP bool,
+	buildWaypoint bool,
+) ([]cache.SharedIndexInformer, *serviceIPIndex, *waypointIndex, error) {
 	resync := cfg.Watch.ResyncPeriod
 	if resync == 0 {
 		resync = 5 * time.Minute
 	}
 
-	idx := newServiceIPIndex()
+	var ipIdx *serviceIPIndex
+	if buildIP {
+		ipIdx = newServiceIPIndex()
+	}
+	var wpIdx *waypointIndex
+	if buildWaypoint {
+		wpIdx = newWaypointIndex()
+	}
 
 	var factories []informers.SharedInformerFactory
 	if len(cfg.Watch.Namespaces) == 0 {
@@ -228,42 +329,61 @@ func startServiceInformer(
 	var infs []cache.SharedIndexInformer
 	for _, f := range factories {
 		svcInf := f.Core().V1().Services().Informer()
-		registerServiceHandlers(svcInf, idx, logger)
+		registerServiceHandlers(svcInf, ipIdx, wpIdx, logger)
 		infs = append(infs, svcInf)
 		f.Start(ctx.Done())
 	}
-	return infs, idx, nil
+	return infs, ipIdx, wpIdx, nil
 }
 
-func registerServiceHandlers(inf cache.SharedIndexInformer, idx *serviceIPIndex, logger *zap.Logger) {
+// registerServiceHandlers wires Service add/update/delete into whichever of the
+// two indexes are enabled. Both args are nil-safe so a feature that is off
+// simply skips its index write.
+func registerServiceHandlers(inf cache.SharedIndexInformer, ipIdx *serviceIPIndex, wpIdx *waypointIndex, logger *zap.Logger) {
+	upsert := func(svc *corev1.Service) {
+		if ipIdx != nil {
+			ipIdx.upsertService(svc)
+		}
+		if wpIdx != nil {
+			wpIdx.upsertService(svc)
+		}
+	}
+	del := func(ns, name string) {
+		if ipIdx != nil {
+			ipIdx.deleteService(ns, name)
+		}
+		if wpIdx != nil {
+			wpIdx.deleteService(ns, name)
+		}
+	}
 	_, _ = inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
 			svc, ok := obj.(*corev1.Service)
 			if !ok {
 				return
 			}
-			idx.upsertService(svc)
+			upsert(svc)
 		},
 		UpdateFunc: func(_, newObj any) {
 			svc, ok := newObj.(*corev1.Service)
 			if !ok {
 				return
 			}
-			idx.upsertService(svc)
+			upsert(svc)
 		},
 		DeleteFunc: func(obj any) {
 			svc, ok := obj.(*corev1.Service)
 			if !ok {
 				if t, isT := obj.(cache.DeletedFinalStateUnknown); isT {
 					if svc2, ok2 := t.Obj.(*corev1.Service); ok2 {
-						idx.deleteService(svc2.Namespace, svc2.Name)
+						del(svc2.Namespace, svc2.Name)
 						return
 					}
 				}
 				logger.Debug("Service delete: unexpected tombstone type")
 				return
 			}
-			idx.deleteService(svc.Namespace, svc.Name)
+			del(svc.Namespace, svc.Name)
 		},
 	})
 }

@@ -57,6 +57,8 @@ Mesh policies under `deploy/10-mesh/policies/`:
 
 The processor stamps the same normalized `k8s.httproute.*` attributes on both ingress and mesh traffic, so the Dynatrace Notebook can join the two views on one HTTPRoute identity.
 
+Mesh routes additionally carry first-class GAMMA identity ([ISI-6178](https://paperclip.isitobservable.com/ISI/issues/ISI-6178)): `k8s.{http,grpc}route.parent.kind`, `k8s.service.parent.port`, the waypoint attribution (`k8s.gatewayapi.waypoint.implementation`/`.name`/`.namespace`, recognizing Istio ambient, kgateway, and Istio east-west), a producer/consumer `k8s.gatewayapi.route.role`, and named-rule correlation (`k8s.{http,grpc}route.rule.name`). GRPCRoute gets the full schema in parity with HTTPRoute. See [`docs/configuration.md` § mesh](./docs/configuration.md#mesh) for the attribute contract and the `mesh:` config block.
+
 ## Custom collector image
 
 Built via OCB ([builder-config.yaml](./builder-config.yaml)) and published to GHCR:

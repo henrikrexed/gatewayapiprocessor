@@ -72,7 +72,25 @@ func createDefaultConfig() component.Config {
 				"k8s.grpcroute.uid",
 				"k8s.gateway.uid",
 				"k8s.gatewayapi.raw_route_name",
+				// GAMMA high-cardinality mesh keys stripped from metrics by
+				// default (ISI-6178 / design D6). parent.port is per-Service
+				// and rule.name is per-rule — both explode metric series.
+				// Kept on spans/logs where cardinality is bounded per-request.
+				AttrParentServicePort,
+				AttrHTTPRouteRuleName,
+				AttrGRPCRouteRuleName,
 			},
+		},
+		Mesh: MeshConfig{
+			// Data-driven waypoint class set (design D2/D3). New mesh impls are
+			// added here without a code change.
+			WaypointClassNames: []string{
+				"istio-waypoint",
+				"kgateway-waypoint",
+				"istio-eastwest",
+			},
+			// ClassifyRouteRole / InferServiceParent default to enabled via
+			// their nil-pointer accessors (MeshConfig.*Enabled()).
 		},
 		EmitStatusConds: true,
 		BackendRefFallback: BackendRefFallback{

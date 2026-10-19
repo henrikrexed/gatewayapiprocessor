@@ -14,6 +14,7 @@ YAML mapstructure field names as declared in `gatewayapiprocessor/config.go`.
 | `enrich`                  | object &mdash; [EnrichConfig](#enrich) | see below        | Which signals to enrich and metrics cardinality guard.            |
 | `emit_status_conditions`  | bool                         | `true`           | When true, stamps `k8s.httproute.accepted` and `k8s.httproute.resolved_refs` from the HTTPRoute status subresource, and `k8s.grpcroute.accepted` and `k8s.grpcroute.resolved_refs` from the GRPCRoute status subresource. |
 | `backendref_fallback`     | object &mdash; [BackendRefFallback](#backendref_fallback) | see below | Best-effort enrichment when no HTTPRoute match is found. |
+| `mesh`                    | object &mdash; [MeshConfig](#mesh)     | see below        | GAMMA (service-mesh) enrichment knobs: waypoint recognition and producer/consumer classification. |
 | `informer_sync_timeout`   | duration                     | `30s`            | Upper bound on `Start()` waiting for informer caches to warm up. Must be >= 0. |
 
 ## watch
@@ -146,7 +147,7 @@ Which signals to enrich and the metrics cardinality guard.
 | `traces`                           | bool           | `true`                                                                                                               | Enable trace enrichment.                                                                                                                        |
 | `logs`                             | bool           | `true`                                                                                                               | Enable log enrichment.                                                                                                                          |
 | `metrics`                          | bool           | `true`                                                                                                               | Enable metrics enrichment.                                                                                                                      |
-| `exclude_from_metric_attributes`   | list of string | `[k8s.httproute.uid, k8s.gateway.uid, k8s.gatewayapi.raw_route_name]`                                                | Attribute keys stripped from metrics before emit. Cardinality guard: keep UID-like and raw-string attributes off the metrics path.              |
+| `exclude_from_metric_attributes`   | list of string | `[k8s.httproute.uid, k8s.grpcroute.uid, k8s.gateway.uid, k8s.gatewayapi.raw_route_name, k8s.service.parent.port, k8s.httproute.rule.name, k8s.grpcroute.rule.name]` | Attribute keys stripped from metrics before emit. Cardinality guard: keep UID-like, raw-string, and per-rule/per-port GAMMA attributes off the metrics path (ISI-6178 / design D6). |
 
 ## backendref_fallback
 
@@ -209,6 +210,54 @@ span originating outside `otel-demo` (or with no `k8s.namespace.name` resource
 attribute) is stamped with the ingress route
 (`gateway.networking.k8s.io/route-mode = ingress` + `k8s.gateway.*`).
 
+## mesh
+
+GAMMA (Gateway API for Mesh) enrichment knobs. GAMMA attaches an
+`HTTPRoute`/`GRPCRoute` to a **Service** (`parentRef.kind = Service`) for
+east-west traffic, or routes through a **waypoint** Gateway whose class is a
+mesh data-plane proxy. Added in [ISI-6178](https://paperclip.isitobservable.com/ISI/issues/ISI-6178)
+implementing the Architect-approved design decisions D1–D6
+([ISI-6175](https://paperclip.isitobservable.com/ISI/issues/ISI-6175)). All of
+it is additive — existing `k8s.service.parent.name/namespace` and
+`gateway.networking.k8s.io/route-mode` keys are unchanged.
+
+| Key                     | Type           | Default                                           | Description                                                                                                                                                       |
+| ----------------------- | -------------- | ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `waypoint_class_names`  | list of string | `[istio-waypoint, kgateway-waypoint, istio-eastwest]` | gatewayClassName values that identify a mesh waypoint Gateway. A route whose parent Gateway uses one of these classes is classified as `mesh` and stamped with a waypoint implementation. Data-driven: a new mesh impl needs a config change, not a code change. Empty disables class-based waypoint detection (and the associated Service label-cache informer). |
+| `classify_route_role`   | bool           | `true`                                            | Stamp `k8s.gatewayapi.route.role` (`producer`/`consumer`) on mesh routes. Set `false` to suppress.                                                                 |
+| `infer_service_parent`  | bool           | `true`                                            | Reserved config surface for nil-Kind parent-Service inference (design D4). The inference machinery is tracked as a follow-up; the flag is accepted today so operators can pre-set it and the default stays stable. |
+
+### GAMMA attribute schema
+
+Stamped on spans/logs (and metrics, except the keys in the D6 strip-list):
+
+| Attribute | Type | Stamped when | Notes |
+|---|---|---|---|
+| `k8s.httproute.parent.kind` / `k8s.grpcroute.parent.kind` | string | always | `Gateway` or `Service` (defaults to `Gateway` per spec when `parentRef.kind` is omitted). |
+| `k8s.service.parent.name` / `.namespace` | string | mesh (Service parent) | Parent Service identity (shipped before ISI-6178). |
+| `k8s.service.parent.port` | int | mesh + `parentRef.port` set | **Stripped from metrics (D6).** |
+| `gateway.networking.k8s.io/route-mode` | enum `mesh`\|`ingress` | always | Single source of truth (D2). Flips to `mesh` for a Service parent **or** a waypoint GatewayClass. |
+| `k8s.gatewayapi.waypoint.implementation` | enum `istio-ambient`\|`kgateway`\|`istio-eastwest` | waypoint route | From the GatewayClass (class-based) or the parent Service's `istio.io/use-waypoint` label (label-based). |
+| `k8s.gatewayapi.waypoint.name` / `.namespace` | string | waypoint resolved | Waypoint Gateway identity (class path) or label value (`istio.io/use-waypoint`, namespace from `istio.io/use-waypoint-namespace`). |
+| `k8s.gatewayapi.route.role` | enum `producer`\|`consumer` | mesh + `classify_route_role` | `producer` when the route shares its parent Service's namespace; `consumer` otherwise. |
+| `k8s.httproute.rule.name` / `k8s.grpcroute.rule.name` | string | matched rule is named (gateway-api ≥ v1.4) | Resolved from the positional rule index. `k8s.{http,grpc}route.rule_index` remains for unnamed rules. **Stripped from metrics (D6).** |
+
+> **Cilium note:** Cilium's GAMMA implementation supports **producer routes only** — consumer routes are silently ignored by Cilium, so a `k8s.gatewayapi.route.role = consumer` attribute on a Cilium mesh may describe a route that is not actually programmed.
+
+### Waypoint detection & the shared Service informer
+
+Waypoint attribution uses two signals:
+
+1. **Class-based** — the parent Gateway's `gatewayClassName` is in
+   `waypoint_class_names`. Resolved at route-projection time, no extra watch.
+2. **Label-based** — the parent Service carries `istio.io/use-waypoint`.
+   Resolved at stamp time against a Service label-cache.
+
+The label-cache reuses the **existing** core `Service` informer that powers
+`backendref_fallback` (one watch, two indexes — design D5). That informer now
+starts when `backendref_fallback.enabled` **or** `mesh.waypoint_class_names` is
+non-empty, and builds only the indexes the enabled features need.
+
 ## Validation rules
 
 Enforced by `Config.Validate()` at component startup:
@@ -224,6 +273,7 @@ Enforced by `Config.Validate()` at component startup:
 - `watch.resync_period` and `informer_sync_timeout` must be >= 0.
 - Every `watch.policies[*]` entry must declare both `version` and `resource`
   (`group` may be empty for core-API CRDs).
+- Every `mesh.waypoint_class_names[*]` entry must be non-empty (non-whitespace).
 
 ## Defaults
 
@@ -260,11 +310,22 @@ processors:
       metrics: true
       exclude_from_metric_attributes:
         - k8s.httproute.uid
+        - k8s.grpcroute.uid
         - k8s.gateway.uid
         - k8s.gatewayapi.raw_route_name
+        - k8s.service.parent.port
+        - k8s.httproute.rule.name
+        - k8s.grpcroute.rule.name
     emit_status_conditions: true
     backendref_fallback:
       enabled: true
       source_attribute: server.address
+    mesh:
+      waypoint_class_names:
+        - istio-waypoint
+        - kgateway-waypoint
+        - istio-eastwest
+      classify_route_role: true
+      infer_service_parent: true
     informer_sync_timeout: 30s
 ```
