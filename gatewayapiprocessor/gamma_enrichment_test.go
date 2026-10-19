@@ -35,7 +35,7 @@ func TestHTTPRouteToAttrs_ParentKindAndPort_ServiceParent(t *testing.T) {
 			},
 		},
 	}
-	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), defaultMeshCfg())
+	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), defaultMeshCfg(), nil)
 	assert.Equal(t, "Service", ra.ParentKind)
 	assert.Equal(t, int32(8080), ra.ParentServicePort)
 	assert.Equal(t, RouteModeMesh, ra.RouteMode)
@@ -50,14 +50,14 @@ func TestHTTPRouteToAttrs_ParentKind_DefaultsGateway(t *testing.T) {
 			},
 		},
 	}
-	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), defaultMeshCfg())
+	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), defaultMeshCfg(), nil)
 	assert.Equal(t, "Gateway", ra.ParentKind, "nil parentRef.kind defaults to Gateway")
 	assert.Zero(t, ra.ParentServicePort, "no port for Gateway parent")
 }
 
 func TestHTTPRouteToAttrs_NoParentRefs_NoParentKind(t *testing.T) {
 	hr := &gwv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "demo"}}
-	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), defaultMeshCfg())
+	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), defaultMeshCfg(), nil)
 	assert.Empty(t, ra.ParentKind, "a parentless route stamps no parent.kind")
 }
 
@@ -71,7 +71,7 @@ func TestHTTPRouteToAttrs_ServiceParent_NoPort_ZeroPort(t *testing.T) {
 			},
 		},
 	}
-	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), defaultMeshCfg())
+	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), defaultMeshCfg(), nil)
 	assert.Zero(t, ra.ParentServicePort, "omitted parentRef.port projects as 0 (not stamped)")
 }
 
@@ -87,7 +87,7 @@ func TestRole_Producer_SameNamespace(t *testing.T) {
 			},
 		},
 	}
-	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), defaultMeshCfg())
+	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), defaultMeshCfg(), nil)
 	assert.Equal(t, RouteRoleProducer, ra.RouteRole, "route in parent Service's namespace is a producer route")
 }
 
@@ -102,7 +102,7 @@ func TestRole_Consumer_DifferentNamespace(t *testing.T) {
 			},
 		},
 	}
-	ra := grpcRouteToAttrs(gr, newGatewayStore(), newGatewayClassStore(), defaultMeshCfg())
+	ra := grpcRouteToAttrs(gr, newGatewayStore(), newGatewayClassStore(), defaultMeshCfg(), nil)
 	assert.Equal(t, RouteRoleConsumer, ra.RouteRole, "route outside parent Service's namespace is a consumer route")
 }
 
@@ -119,7 +119,7 @@ func TestRole_Disabled_NoRole(t *testing.T) {
 	cfg := defaultMeshCfg()
 	off := false
 	cfg.Mesh.ClassifyRouteRole = &off
-	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), cfg)
+	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), cfg, nil)
 	assert.Empty(t, ra.RouteRole, "classify_route_role=false suppresses role")
 }
 
@@ -130,7 +130,7 @@ func TestRole_IngressRoute_NoRole(t *testing.T) {
 			CommonRouteSpec: gwv1.CommonRouteSpec{ParentRefs: []gwv1.ParentReference{{Name: "public"}}},
 		},
 	}
-	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), defaultMeshCfg())
+	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), defaultMeshCfg(), nil)
 	assert.Empty(t, ra.RouteRole, "ingress routes carry no producer/consumer role")
 }
 
@@ -158,7 +158,7 @@ func TestWaypointClass_FlipsToMeshAndStampsImpl(t *testing.T) {
 					CommonRouteSpec: gwv1.CommonRouteSpec{ParentRefs: []gwv1.ParentReference{{Name: "mesh-gw"}}},
 				},
 			}
-			ra := httpRouteToAttrs(hr, gwStore, newGatewayClassStore(), defaultMeshCfg())
+			ra := httpRouteToAttrs(hr, gwStore, newGatewayClassStore(), defaultMeshCfg(), nil)
 			assert.Equal(t, RouteModeMesh, ra.RouteMode, "a waypoint-class Gateway makes the route mesh")
 			assert.Equal(t, tc.wantImpl, ra.WaypointImplementation)
 			assert.Equal(t, "mesh-gw", ra.WaypointName)
@@ -179,7 +179,7 @@ func TestWaypointClass_NonWaypointGatewayStaysIngress(t *testing.T) {
 			CommonRouteSpec: gwv1.CommonRouteSpec{ParentRefs: []gwv1.ParentReference{{Name: "public"}}},
 		},
 	}
-	ra := httpRouteToAttrs(hr, gwStore, newGatewayClassStore(), defaultMeshCfg())
+	ra := httpRouteToAttrs(hr, gwStore, newGatewayClassStore(), defaultMeshCfg(), nil)
 	assert.Equal(t, RouteModeIngress, ra.RouteMode)
 	assert.Empty(t, ra.WaypointImplementation, "a non-waypoint class carries no waypoint attribution")
 }
