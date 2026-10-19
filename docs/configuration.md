@@ -225,7 +225,7 @@ it is additive — existing `k8s.service.parent.name/namespace` and
 | ----------------------- | -------------- | ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `waypoint_class_names`  | list of string | `[istio-waypoint, kgateway-waypoint, istio-eastwest]` | gatewayClassName values that identify a mesh waypoint Gateway. A route whose parent Gateway uses one of these classes is classified as `mesh` and stamped with a waypoint implementation. Data-driven: a new mesh impl needs a config change, not a code change. Empty disables class-based waypoint detection (and the associated Service label-cache informer). |
 | `classify_route_role`   | bool           | `true`                                            | Stamp `k8s.gatewayapi.route.role` (`producer`/`consumer`) on mesh routes. Set `false` to suppress.                                                                 |
-| `infer_service_parent`  | bool           | `true`                                            | Reserved config surface for nil-Kind parent-Service inference (design D4). The inference machinery is tracked as a follow-up; the flag is accepted today so operators can pre-set it and the default stays stable. |
+| `infer_service_parent`  | bool           | `true`                                            | Enable nil-Kind parent-Service inference (design D4, [ISI-6188](https://paperclip.isitobservable.com/ISI/issues/ISI-6188)). When a route's `parentRef` omits `Kind` (which per spec defaults to `Gateway`), resolves to no Gateway, yet names a real Service, the route is reclassified as `mesh`. Set `false` to stay strictly spec-literal. See [nil-Kind parent-Service inference](#nil-kind-parent-service-inference) below. |
 
 ### GAMMA attribute schema
 
@@ -233,7 +233,7 @@ Stamped on spans/logs (and metrics, except the keys in the D6 strip-list):
 
 | Attribute | Type | Stamped when | Notes |
 |---|---|---|---|
-| `k8s.httproute.parent.kind` / `k8s.grpcroute.parent.kind` | string | always | `Gateway` or `Service` (defaults to `Gateway` per spec when `parentRef.kind` is omitted). |
+| `k8s.httproute.parent.kind` / `k8s.grpcroute.parent.kind` | string | always | `Gateway` or `Service` (defaults to `Gateway` per spec when `parentRef.kind` is omitted). Flips to `Service` when nil-Kind inference reclassifies the parent as mesh — see [below](#nil-kind-parent-service-inference). |
 | `k8s.service.parent.name` / `.namespace` | string | mesh (Service parent) | Parent Service identity (shipped before ISI-6178). |
 | `k8s.service.parent.port` | int | mesh + `parentRef.port` set | **Stripped from metrics (D6).** |
 | `gateway.networking.k8s.io/route-mode` | enum `mesh`\|`ingress` | always | Single source of truth (D2). Flips to `mesh` for a Service parent **or** a waypoint GatewayClass. |
@@ -254,9 +254,47 @@ Waypoint attribution uses two signals:
    Resolved at stamp time against a Service label-cache.
 
 The label-cache reuses the **existing** core `Service` informer that powers
-`backendref_fallback` (one watch, two indexes — design D5). That informer now
+`backendref_fallback` (one watch, N indexes — design D5). That informer now
 starts when `backendref_fallback.enabled` **or** `mesh.waypoint_class_names` is
-non-empty, and builds only the indexes the enabled features need.
+non-empty **or** `mesh.infer_service_parent` is on, and builds only the indexes
+the enabled features need.
+
+### nil-Kind parent-Service inference
+
+Per the Gateway API spec a `parentRef.kind` *defaults* to `Gateway` when
+omitted, so a well-formed GAMMA mesh route (parent = a Service) must set
+`kind: Service` explicitly. Real-world manifests — and OBI-derived spans that
+synthesize `parentRefs` — are inconsistent and frequently omit `Kind`, which
+would otherwise misclassify a mesh Service parent as a (missing) Gateway and
+drop the route to `ingress` with no attribution.
+
+With `mesh.infer_service_parent: true` (the default) the processor keeps the
+spec-correct default but adds a guarded fallback: a nil-Kind **core-group**
+`parentRef` that resolves to **no Gateway**, yet whose `ns/name` names a **real
+Service**, is reclassified as `mesh` — stamping the same
+`k8s.service.parent.*` + `route-mode = mesh` attributes as an explicit Service
+parent, and flipping `*.parent.kind` to `Service`. Two guardrails bound it:
+
+1. **Post-sync only.** The fallback fires only *after* the Gateway informer has
+   completed its initial list/sync. During sync, "no Gateway with this ns/name"
+   is indistinguishable from "the Gateway informer hasn't listed it yet", so
+   inferring then would false-positive every ingress route whose Gateway lists
+   late. A route projected during the initial sync is cached as `ingress` and
+   reclassified on its next re-projection (a route update or the
+   `watch.resync_period` relist, default 5m).
+2. **No per-span marker.** A reclassification increments the internal
+   self-telemetry counter `gatewayapi_parent_inferred_total` and emits a
+   debug-log — but stamps **no** marker attribute on the data. The inferred
+   mesh attributes are indistinguishable from an explicit Service parent;
+   whether they were *inferred* is observable only through the counter + log.
+
+An explicit `kind: Gateway` parentRef is **never** meshed even if it dangles
+(no such Gateway) and a same-named Service exists — only an omitted/empty
+`Kind` is a candidate.
+
+The Service-existence check uses the Service **name** index — a third index on
+the same shared Service informer described above (design D5: one watch, N
+indexes), built only when `infer_service_parent` is on.
 
 ## Validation rules
 

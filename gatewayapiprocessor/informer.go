@@ -6,8 +6,10 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	coreinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
@@ -26,7 +28,7 @@ import (
 //  2. Start 4 shared informers (Gateway, HTTPRoute, GRPCRoute, GatewayClass).
 //  3. Wait for all 4 caches to sync before returning.
 //  4. Fail fast on sync timeout.
-func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLookup, func(context.Context) error, error) {
+func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config, inferCounter metric.Int64Counter) (RouteLookup, func(context.Context) error, error) {
 	restCfg, err := buildRESTConfig(cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build rest config: %w", err)
@@ -60,62 +62,60 @@ func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLo
 	// Collect all shared informers we start so we can wait on their sync.
 	var informers []cache.SharedIndexInformer
 
+	// Pass 1: create every Gateway-API informer and register the Gateway /
+	// GatewayClass handlers (they populate the stores the route projection
+	// reads). Route handlers are deferred to pass 2 because the nil-Kind
+	// inference (ISI-6188 / D4) threads a parentInferrer into them, and that
+	// inferrer needs both the Gateway informers' HasSynced signal (guardrail 1)
+	// and the Service name index — neither of which exists until every informer
+	// is created. f.Start is deferred to pass 3 so no projection runs — and so
+	// no inference is attempted — before the inferrer is wired.
+	var gwInfs []cache.SharedIndexInformer
+	type routeInfPair struct{ hr, gr cache.SharedIndexInformer }
+	var routeInfs []routeInfPair
 	for _, f := range factories {
 		hrInf := f.Gateway().V1().HTTPRoutes().Informer()
 		grInf := f.Gateway().V1().GRPCRoutes().Informer()
 		gwInf := f.Gateway().V1().Gateways().Informer()
 		gcInf := f.Gateway().V1().GatewayClasses().Informer()
 
-		registerHTTPRouteHandlers(hrInf, index, gwStore, gcStore, cfg, logger)
-		registerGRPCRouteHandlers(grInf, index, gwStore, gcStore, cfg, logger)
 		registerGatewayHandlers(gwInf, gwStore, logger)
 		registerGatewayClassHandlers(gcInf, gcStore, logger)
 
+		gwInfs = append(gwInfs, gwInf)
+		routeInfs = append(routeInfs, routeInfPair{hr: hrInf, gr: grInf})
 		informers = append(informers, hrInf, grInf, gwInf, gcInf)
-
-		f.Start(ctx.Done())
 	}
 
-	// Policy informers (ISI-804). Only fires when cfg.Watch.Policies is
-	// configured; routes & enrichment continue to work unchanged for users
-	// who haven't opted in.
-	policyInformers, err := startPolicyInformers(ctx, logger, restCfg, cfg, index)
-	if err != nil {
-		return nil, nil, fmt.Errorf("start policy informers: %w", err)
-	}
-	informers = append(informers, policyInformers...)
-
-	// Service-IP informer (ISI-851). Gated on backendref_fallback.enabled —
-	// the index is only consulted from applyBackendRefFallback, which itself
-	// short-circuits when the feature is off (processor.go:259). Skipping the
-	// informer when the feature is disabled avoids a cluster-scoped list+watch
-	// on core/v1/Services that would stream every Service create/update/delete
-	// to every collector pod for no benefit (Copilot review on PR #55).
-	// Phase 2 (EndpointSlice -> PodIP, ISI-875) plugs into the same
-	// combinedLookup behind the same flag plus the PodIP sub-flag.
+	// Service informer (ISI-851 / ISI-6178 / ISI-6188). Gated independently per
+	// feature; the shared informer builds only the indexes the enabled features
+	// need (design D5 — one watch, N indexes):
+	//   - buildIP:       ClusterIP reverse-lookup index (backendref_fallback).
+	//                    Consulted from applyBackendRefFallback, which
+	//                    short-circuits when the feature is off, so skipping the
+	//                    informer avoids a cluster-scoped Service list+watch for
+	//                    no benefit (Copilot review on PR #55).
+	//   - buildWaypoint: use-waypoint label cache (GAMMA waypoint attribution).
+	//   - buildName:     Service name index (nil-Kind parent-Service inference).
 	//
-	// Both informers receive the same kubernetes clientset so they share
-	// one HTTP connection pool to the API server (Copilot review on
-	// PR #66) rather than opening one per informer.
-	//
-	// Gate decoupling (ISI-6178 / design D5): the shared Service informer now
-	// serves two features — the ClusterIP reverse-lookup index
-	// (backendref_fallback) and the use-waypoint label cache (GAMMA waypoint
-	// attribution). Start it when EITHER is enabled, and build only the indexes
-	// the enabled features need so no feature pays for the other's index.
+	// The Service informer and the EndpointSlice informer (ISI-875) share one
+	// kubernetes clientset / HTTP connection pool (Copilot review on PR #66).
 	var ipIndex *serviceIPIndex
 	var wpIndex *waypointIndex
+	var nameIndex *serviceNameIndex
 	var podIndex *podIPIndex
+	var svcFactories []coreinformers.SharedInformerFactory
 	buildIP := cfg.BackendRefFallback.Enabled
 	buildWaypoint := cfg.Mesh.WaypointEnabled()
-	if buildIP || buildWaypoint {
+	buildName := cfg.Mesh.InferServiceParentEnabled()
+	if buildIP || buildWaypoint || buildName {
 		k8sClient, err := kubernetes.NewForConfig(restCfg)
 		if err != nil {
 			return nil, nil, fmt.Errorf("build kubernetes clientset: %w", err)
 		}
 
 		var svcInformers []cache.SharedIndexInformer
-		svcInformers, ipIndex, wpIndex, err = startServiceInformer(ctx, logger, k8sClient, cfg, buildIP, buildWaypoint)
+		svcInformers, svcFactories, ipIndex, wpIndex, nameIndex, err = startServiceInformer(logger, k8sClient, cfg, buildIP, buildWaypoint, buildName)
 		if err != nil {
 			return nil, nil, fmt.Errorf("start service informer: %w", err)
 		}
@@ -124,8 +124,8 @@ func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLo
 		// EndpointSlice informer (ISI-875). Defaults to on whenever
 		// BackendRefFallback.Enabled is true; opt out via
 		// `backendref_fallback.pod_ip: false` on scale-sensitive clusters.
-		// Scoped to backendref_fallback only — waypoint attribution never needs
-		// PodIP resolution.
+		// Scoped to backendref_fallback only — waypoint attribution and nil-Kind
+		// inference never need PodIP resolution.
 		if cfg.BackendRefFallback.Enabled && cfg.BackendRefFallback.PodIPEnabled() {
 			var esInformers []cache.SharedIndexInformer
 			esInformers, podIndex, err = startEndpointSliceInformer(ctx, logger, k8sClient, cfg)
@@ -134,6 +134,47 @@ func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLo
 			}
 			informers = append(informers, esInformers...)
 		}
+	}
+
+	// Build the D4 inferrer now that both halves of its predicate exist: the
+	// Gateway informers' aggregate HasSynced (guardrail 1) and the Service name
+	// index. newParentInferrer returns nil when mesh.infer_service_parent is
+	// off, and the projection path is nil-safe, so inference simply never fires.
+	gatewaySynced := func() bool {
+		for _, gi := range gwInfs {
+			if !gi.HasSynced() {
+				return false
+			}
+		}
+		return true
+	}
+	inferrer := newParentInferrer(cfg, logger, inferCounter, gatewaySynced, nameIndex.Exists)
+
+	// Pass 2: register the route handlers with the inferrer wired in. Still no
+	// f.Start, so these handlers won't fire until pass 3.
+	for _, ri := range routeInfs {
+		registerHTTPRouteHandlers(ri.hr, index, gwStore, gcStore, cfg, inferrer, logger)
+		registerGRPCRouteHandlers(ri.gr, index, gwStore, gcStore, cfg, inferrer, logger)
+	}
+
+	// Policy informers (ISI-804). Only fires when cfg.Watch.Policies is
+	// configured; routes & enrichment continue to work unchanged for users
+	// who haven't opted in. No inferrer dependency, so it manages its own start.
+	policyInformers, err := startPolicyInformers(ctx, logger, restCfg, cfg, index)
+	if err != nil {
+		return nil, nil, fmt.Errorf("start policy informers: %w", err)
+	}
+	informers = append(informers, policyInformers...)
+
+	// Pass 3: start every Gateway-API and Service factory. All handlers are now
+	// registered and the inferrer is wired, so the guardrail-1 invariant holds:
+	// a projection that runs during the initial list sees gatewaySynced()==false
+	// and never infers.
+	for _, f := range factories {
+		f.Start(ctx.Done())
+	}
+	for _, f := range svcFactories {
+		f.Start(ctx.Done())
 	}
 
 	syncCtx, cancel := context.WithTimeout(ctx, defaultSyncTimeout(cfg.InformerSyncTimeout))
@@ -172,14 +213,14 @@ func defaultSyncTimeout(v time.Duration) time.Duration {
 
 // --- event handlers ---
 
-func registerHTTPRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, gwStore *gatewayStore, gcStore *gatewayClassStore, cfg *Config, logger *zap.Logger) {
+func registerHTTPRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, gwStore *gatewayStore, gcStore *gatewayClassStore, cfg *Config, inferrer *parentInferrer, logger *zap.Logger) {
 	_, _ = inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
 			hr, ok := obj.(*gwv1.HTTPRoute)
 			if !ok {
 				return
 			}
-			ra := httpRouteToAttrs(hr, gwStore, gcStore, cfg)
+			ra := httpRouteToAttrs(hr, gwStore, gcStore, cfg, inferrer)
 			idx.upsertHTTPRoute(ra, backendRefsFromHTTPRoute(hr))
 		},
 		UpdateFunc: func(_, newObj any) {
@@ -187,7 +228,7 @@ func registerHTTPRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, g
 			if !ok {
 				return
 			}
-			ra := httpRouteToAttrs(hr, gwStore, gcStore, cfg)
+			ra := httpRouteToAttrs(hr, gwStore, gcStore, cfg, inferrer)
 			idx.upsertHTTPRoute(ra, backendRefsFromHTTPRoute(hr))
 		},
 		DeleteFunc: func(obj any) {
@@ -208,21 +249,21 @@ func registerHTTPRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, g
 	})
 }
 
-func registerGRPCRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, gwStore *gatewayStore, gcStore *gatewayClassStore, cfg *Config, logger *zap.Logger) {
+func registerGRPCRouteHandlers(inf cache.SharedIndexInformer, idx *routeIndex, gwStore *gatewayStore, gcStore *gatewayClassStore, cfg *Config, inferrer *parentInferrer, logger *zap.Logger) {
 	_, _ = inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
 			gr, ok := obj.(*gwv1.GRPCRoute)
 			if !ok {
 				return
 			}
-			idx.upsertGRPCRoute(grpcRouteToAttrs(gr, gwStore, gcStore, cfg), backendRefsFromGRPCRoute(gr))
+			idx.upsertGRPCRoute(grpcRouteToAttrs(gr, gwStore, gcStore, cfg, inferrer), backendRefsFromGRPCRoute(gr))
 		},
 		UpdateFunc: func(_, newObj any) {
 			gr, ok := newObj.(*gwv1.GRPCRoute)
 			if !ok {
 				return
 			}
-			idx.upsertGRPCRoute(grpcRouteToAttrs(gr, gwStore, gcStore, cfg), backendRefsFromGRPCRoute(gr))
+			idx.upsertGRPCRoute(grpcRouteToAttrs(gr, gwStore, gcStore, cfg, inferrer), backendRefsFromGRPCRoute(gr))
 		},
 		DeleteFunc: func(obj any) {
 			gr, ok := obj.(*gwv1.GRPCRoute)
@@ -267,7 +308,10 @@ func registerGatewayClassHandlers(inf cache.SharedIndexInformer, store *gatewayC
 
 // --- projections from CR -> RouteAttributes ---
 
-func httpRouteToAttrs(hr *gwv1.HTTPRoute, gwStore *gatewayStore, gcStore *gatewayClassStore, cfg *Config) RouteAttributes {
+// httpRouteToAttrs projects an HTTPRoute to RouteAttributes. inferrer carries
+// the nil-Kind parent-Service inference dependencies (ISI-6188 / D4) and may be
+// nil (inference off / no-Kubernetes mode / tests that don't exercise D4).
+func httpRouteToAttrs(hr *gwv1.HTTPRoute, gwStore *gatewayStore, gcStore *gatewayClassStore, cfg *Config, inferrer *parentInferrer) RouteAttributes {
 	ra := RouteAttributes{
 		Kind:      RouteKindHTTPRoute,
 		Name:      hr.Name,
@@ -276,7 +320,7 @@ func httpRouteToAttrs(hr *gwv1.HTTPRoute, gwStore *gatewayStore, gcStore *gatewa
 		RouteMode: RouteModeIngress,
 	}
 	if len(hr.Spec.ParentRefs) > 0 {
-		applyParentRef(&ra, hr.Spec.ParentRefs[0], hr.Namespace, gwStore, gcStore, cfg)
+		applyParentRef(&ra, hr.Spec.ParentRefs[0], hr.Namespace, gwStore, gcStore, cfg, inferrer)
 	}
 	ra.RuleNames = httpRuleNames(hr)
 	if cfg.EmitStatusConds {
@@ -285,7 +329,9 @@ func httpRouteToAttrs(hr *gwv1.HTTPRoute, gwStore *gatewayStore, gcStore *gatewa
 	return ra
 }
 
-func grpcRouteToAttrs(gr *gwv1.GRPCRoute, gwStore *gatewayStore, gcStore *gatewayClassStore, cfg *Config) RouteAttributes {
+// grpcRouteToAttrs mirrors httpRouteToAttrs for GRPCRoute (§4.6). inferrer may
+// be nil; see httpRouteToAttrs.
+func grpcRouteToAttrs(gr *gwv1.GRPCRoute, gwStore *gatewayStore, gcStore *gatewayClassStore, cfg *Config, inferrer *parentInferrer) RouteAttributes {
 	ra := RouteAttributes{
 		Kind:      RouteKindGRPCRoute,
 		Name:      gr.Name,
@@ -294,7 +340,7 @@ func grpcRouteToAttrs(gr *gwv1.GRPCRoute, gwStore *gatewayStore, gcStore *gatewa
 		RouteMode: RouteModeIngress,
 	}
 	if len(gr.Spec.ParentRefs) > 0 {
-		applyParentRef(&ra, gr.Spec.ParentRefs[0], gr.Namespace, gwStore, gcStore, cfg)
+		applyParentRef(&ra, gr.Spec.ParentRefs[0], gr.Namespace, gwStore, gcStore, cfg, inferrer)
 	}
 	ra.RuleNames = grpcRuleNames(gr)
 	if cfg.EmitStatusConds {
@@ -314,7 +360,13 @@ func grpcRouteToAttrs(gr *gwv1.GRPCRoute, gwStore *gatewayStore, gcStore *gatewa
 //     waypoint detection (§4.2/§4.3) — a Gateway whose gatewayClassName is a
 //     configured waypoint class flips the route to mesh and stamps the
 //     waypoint implementation + identity.
-func applyParentRef(ra *RouteAttributes, pr gwv1.ParentReference, routeNS string, gwStore *gatewayStore, gcStore *gatewayClassStore, cfg *Config) {
+//   - nil-Kind inference (ISI-6188 / D4): a Gateway-less, nil-Kind core-group
+//     parentRef whose ns/name names a real Service (post Gateway-sync) is
+//     reclassified as a mesh Service parent — see inferrer.maybeInferServiceParent.
+//
+// inferrer may be nil (inference off), in which case the nil-Kind fallback is
+// skipped and the function behaves exactly as before.
+func applyParentRef(ra *RouteAttributes, pr gwv1.ParentReference, routeNS string, gwStore *gatewayStore, gcStore *gatewayClassStore, cfg *Config, inferrer *parentInferrer) {
 	ra.ParentRef = formatParentRef(pr, routeNS)
 	ra.ParentKind = parentKindOf(pr)
 
@@ -324,20 +376,25 @@ func applyParentRef(ra *RouteAttributes, pr gwv1.ParentReference, routeNS string
 	}
 
 	if isServiceParent(pr) {
-		// GAMMA mesh-mode route: the parent IS a backend Service. No
-		// Gateway/GatewayClass attribution; stamp parent Service identity.
-		ra.RouteMode = RouteModeMesh
-		ra.ParentServiceName = string(pr.Name)
-		ra.ParentServiceNamespace = ns
-		if pr.Port != nil {
-			ra.ParentServicePort = *pr.Port
-		}
-		classifyRouteRole(ra, routeNS, cfg)
+		// GAMMA mesh-mode route: the parent IS a backend Service (explicit
+		// Kind=Service). No Gateway/GatewayClass attribution.
+		applyServiceParent(ra, pr, ns, routeNS, cfg)
 		return
 	}
 
 	gw, ok := gwStore.get(ns, string(pr.Name))
 	if !ok {
+		// No Gateway with this ns/name. D4 (ISI-6188): if this is a nil-Kind
+		// core-group parentRef whose ns/name names a real Service — and the
+		// Gateway informer has synced — reclassify as a mesh Service parent.
+		// ParentKind flips to "Service" so it matches the explicit-Service path
+		// and stays consistent with route-mode=mesh. No inference marker is
+		// stamped (guardrail 2); the only external signal is the self-telemetry
+		// counter + debug-log emitted by maybeInferServiceParent.
+		if inferrer.maybeInferServiceParent(pr, ns, ra.Kind) {
+			ra.ParentKind = "Service"
+			applyServiceParent(ra, pr, ns, routeNS, cfg)
+		}
 		return
 	}
 	ra.GatewayName = gw.Name
@@ -361,6 +418,22 @@ func applyParentRef(ra *RouteAttributes, pr gwv1.ParentReference, routeNS string
 		ra.WaypointName = gw.Name
 		ra.WaypointNamespace = gw.Namespace
 	}
+}
+
+// applyServiceParent stamps the GAMMA mesh-mode attributes for a Service
+// parent (§4.1/§4.4): route mode, parent Service name/namespace/port, and
+// producer/consumer role. Shared by the explicit-Kind=Service path and the D4
+// nil-Kind inference path so both produce identical mesh attributes. parentNS
+// is the resolved parent-Service namespace (routeNS unless pr.Namespace is set);
+// routeNS is the route's own namespace, used for role classification.
+func applyServiceParent(ra *RouteAttributes, pr gwv1.ParentReference, parentNS, routeNS string, cfg *Config) {
+	ra.RouteMode = RouteModeMesh
+	ra.ParentServiceName = string(pr.Name)
+	ra.ParentServiceNamespace = parentNS
+	if pr.Port != nil {
+		ra.ParentServicePort = *pr.Port
+	}
+	classifyRouteRole(ra, routeNS, cfg)
 }
 
 // classifyRouteRole stamps producer/consumer role on a Service-parent mesh
