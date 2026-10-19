@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/processor"
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 
 	"github.com/henrikrexed/gatewayapiprocessor/gatewayapiprocessor/parser"
@@ -35,6 +36,12 @@ type gatewayAPIProcessor struct {
 
 	lookup RouteLookup
 
+	// inferCounter is the gatewayapi_parent_inferred_total self-telemetry
+	// counter (ISI-6188 / D4 guardrail 2), built once from the processor's
+	// MeterProvider and handed to newInformers. Nil when no MeterProvider is
+	// available (counter disabled; inference still works, debug-log only).
+	inferCounter metric.Int64Counter
+
 	// startHook is called during Start to warm informers. Tests override it with
 	// a no-op; production binds it to newInformers(...).
 	startHook func(ctx context.Context) (RouteLookup, func(context.Context) error, error)
@@ -54,6 +61,7 @@ func newProcessor(set processor.Settings, cfg *Config) (*gatewayAPIProcessor, er
 		logger:             set.Logger,
 		parsers:            parsers,
 		passthroughAttrKey: passthroughKey,
+		inferCounter:       newParentInferredCounter(set.MeterProvider, set.Logger),
 		lookup:             newStaticLookup(), // replaced in Start() when informers wire up
 	}, nil
 }

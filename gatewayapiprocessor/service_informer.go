@@ -24,7 +24,6 @@ package gatewayapiprocessor
 // deferred so we ship the ClusterIP win first.
 
 import (
-	"context"
 	"net"
 	"sync"
 	"time"
@@ -151,6 +150,49 @@ func (w *waypointIndex) deleteService(ns, name string) {
 	w.mu.Unlock()
 }
 
+// serviceNameIndex is a set of (ns/name) for every core/v1 Service the informer
+// has seen. It is the third index the shared Service informer maintains (one
+// watch, N indexes — design D5), added for the nil-Kind parent-Service
+// inference (ISI-6188 / D4): the projection path asks "does a Service with this
+// ns/name exist?" to decide whether a Gateway-less parentRef is really mesh.
+// Reads happen on the signal pipeline; writes on informer goroutines, so an
+// RWMutex keeps go test -race clean.
+type serviceNameIndex struct {
+	mu sync.RWMutex
+	m  map[string]struct{} // key = "ns/name"
+}
+
+func newServiceNameIndex() *serviceNameIndex {
+	return &serviceNameIndex{m: make(map[string]struct{})}
+}
+
+// Exists reports whether a Service with this ns/name is in cache. Nil-safe so
+// callers that never built the index (inference off) can hold a nil pointer.
+func (s *serviceNameIndex) Exists(ns, name string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.m[ns+"/"+name]
+	return ok
+}
+
+func (s *serviceNameIndex) upsertService(svc *corev1.Service) {
+	if svc == nil {
+		return
+	}
+	s.mu.Lock()
+	s.m[svc.Namespace+"/"+svc.Name] = struct{}{}
+	s.mu.Unlock()
+}
+
+func (s *serviceNameIndex) deleteService(ns, name string) {
+	s.mu.Lock()
+	delete(s.m, ns+"/"+name)
+	s.mu.Unlock()
+}
+
 func newServiceIPIndex() *serviceIPIndex {
 	return &serviceIPIndex{
 		m:     make(map[string]nsName),
@@ -273,10 +315,11 @@ func canonicalIP(raw string) string {
 	return ip.String()
 }
 
-// startServiceInformer wires the core/v1.Service informer used to populate
-// the IP reverse-lookup index. Returns the started informer (so the caller
-// can WaitForCacheSync on it alongside the Gateway-API ones) plus the index
-// the processor's fallback path will read from.
+// startServiceInformer wires the core/v1.Service informer that populates the
+// Service-derived indexes. Returns the informers (so the caller can
+// WaitForCacheSync on them alongside the Gateway-API ones), the factories (so
+// the caller can Start them in the unified start phase), and whichever indexes
+// the enabled features need.
 //
 // The caller passes a shared kubernetes.Interface so the Service informer
 // and the EndpointSlice informer (ISI-875) share one HTTP connection pool
@@ -287,20 +330,26 @@ func canonicalIP(raw string) string {
 // Resync period mirrors the gateway-api factories so we don't double-pay
 // list/relist cost.
 //
-// The two indexes are built independently so the informer only pays for what
+// The three indexes are built independently so the informer only pays for what
 // the enabled features need (D5): buildIP toggles the ClusterIP reverse-lookup
-// index (backendref_fallback) and buildWaypoint toggles the use-waypoint label
-// cache (GAMMA waypoint attribution). Either (or both) may be nil in the
-// returned tuple when its feature is off; a non-nil pair shares one Service
-// watch.
+// index (backendref_fallback), buildWaypoint toggles the use-waypoint label
+// cache (GAMMA waypoint attribution), and buildName toggles the Service name
+// index (nil-Kind parent-Service inference, ISI-6188 / D4). Any of the three
+// may be nil in the returned tuple when its feature is off; a non-nil set
+// shares one Service watch.
+//
+// The informer is created and its handlers registered, but f.Start is NOT
+// called here — the caller (newInformers) starts every factory in one phase
+// after all handlers are wired, so the Service name index is observable before
+// the Gateway-API route projections begin inferring against it.
 func startServiceInformer(
-	ctx context.Context,
 	logger *zap.Logger,
 	client kubernetes.Interface,
 	cfg *Config,
 	buildIP bool,
 	buildWaypoint bool,
-) ([]cache.SharedIndexInformer, *serviceIPIndex, *waypointIndex, error) {
+	buildName bool,
+) ([]cache.SharedIndexInformer, []informers.SharedInformerFactory, *serviceIPIndex, *waypointIndex, *serviceNameIndex, error) {
 	resync := cfg.Watch.ResyncPeriod
 	if resync == 0 {
 		resync = 5 * time.Minute
@@ -313,6 +362,10 @@ func startServiceInformer(
 	var wpIdx *waypointIndex
 	if buildWaypoint {
 		wpIdx = newWaypointIndex()
+	}
+	var nameIdx *serviceNameIndex
+	if buildName {
+		nameIdx = newServiceNameIndex()
 	}
 
 	var factories []informers.SharedInformerFactory
@@ -329,23 +382,25 @@ func startServiceInformer(
 	var infs []cache.SharedIndexInformer
 	for _, f := range factories {
 		svcInf := f.Core().V1().Services().Informer()
-		registerServiceHandlers(svcInf, ipIdx, wpIdx, logger)
+		registerServiceHandlers(svcInf, ipIdx, wpIdx, nameIdx, logger)
 		infs = append(infs, svcInf)
-		f.Start(ctx.Done())
 	}
-	return infs, ipIdx, wpIdx, nil
+	return infs, factories, ipIdx, wpIdx, nameIdx, nil
 }
 
 // registerServiceHandlers wires Service add/update/delete into whichever of the
-// two indexes are enabled. Both args are nil-safe so a feature that is off
-// simply skips its index write.
-func registerServiceHandlers(inf cache.SharedIndexInformer, ipIdx *serviceIPIndex, wpIdx *waypointIndex, logger *zap.Logger) {
+// three indexes are enabled. All index args are nil-safe so a feature that is
+// off simply skips its index write.
+func registerServiceHandlers(inf cache.SharedIndexInformer, ipIdx *serviceIPIndex, wpIdx *waypointIndex, nameIdx *serviceNameIndex, logger *zap.Logger) {
 	upsert := func(svc *corev1.Service) {
 		if ipIdx != nil {
 			ipIdx.upsertService(svc)
 		}
 		if wpIdx != nil {
 			wpIdx.upsertService(svc)
+		}
+		if nameIdx != nil {
+			nameIdx.upsertService(svc)
 		}
 	}
 	del := func(ns, name string) {
@@ -354,6 +409,9 @@ func registerServiceHandlers(inf cache.SharedIndexInformer, ipIdx *serviceIPInde
 		}
 		if wpIdx != nil {
 			wpIdx.deleteService(ns, name)
+		}
+		if nameIdx != nil {
+			nameIdx.deleteService(ns, name)
 		}
 	}
 	_, _ = inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
