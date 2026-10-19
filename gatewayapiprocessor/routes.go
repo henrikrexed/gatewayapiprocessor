@@ -95,6 +95,18 @@ const (
 	RouteKindGRPCRoute
 )
 
+// String renders a RouteKind as the CR kind name, for self-telemetry logs.
+func (k RouteKind) String() string {
+	switch k {
+	case RouteKindHTTPRoute:
+		return "HTTPRoute"
+	case RouteKindGRPCRoute:
+		return "GRPCRoute"
+	default:
+		return "Unknown"
+	}
+}
+
 // RouteLookup is the read-side contract the enrichment path depends on.
 //
 // The informer-backed implementation lives in index.go; tests swap in

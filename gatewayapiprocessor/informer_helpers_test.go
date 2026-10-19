@@ -47,7 +47,7 @@ func TestHTTPRouteToAttrs_WithGatewayAndClass(t *testing.T) {
 	}
 
 	cfg := &Config{EmitStatusConds: false}
-	ra := httpRouteToAttrs(hr, gwStore, gcStore, cfg)
+	ra := httpRouteToAttrs(hr, gwStore, gcStore, cfg, nil)
 
 	assert.Equal(t, "api", ra.Name)
 	assert.Equal(t, "demo", ra.Namespace)
@@ -73,7 +73,7 @@ func TestHTTPRouteToAttrs_UnknownGatewayParent_StillStampsRouteIdentity(t *testi
 			},
 		},
 	}
-	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), &Config{})
+	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), &Config{}, nil)
 	assert.Equal(t, "api", ra.Name)
 	assert.Empty(t, ra.GatewayName, "unknown parent must not populate gateway fields")
 	assert.Equal(t, "gateway.networking.k8s.io/Gateway/demo/missing-gw", ra.ParentRef)
@@ -91,7 +91,7 @@ func TestHTTPRouteToAttrs_EmitStatusConditions_Stamps(t *testing.T) {
 			}},
 		}},
 	}
-	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), &Config{EmitStatusConds: true})
+	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), &Config{EmitStatusConds: true}, nil)
 	require.NotNil(t, ra.Accepted)
 	require.NotNil(t, ra.ResolvedRefs)
 	assert.True(t, *ra.Accepted)
@@ -109,7 +109,7 @@ func TestHTTPRouteToAttrs_EmitStatusConditions_Off_NoStatus(t *testing.T) {
 			}},
 		}},
 	}
-	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), &Config{EmitStatusConds: false})
+	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), &Config{EmitStatusConds: false}, nil)
 	assert.Nil(t, ra.Accepted, "emit_status_conditions=false must leave Accepted unpopulated")
 	assert.Nil(t, ra.ResolvedRefs)
 }
@@ -135,7 +135,7 @@ func TestGRPCRouteToAttrs_BasicAndWithGateway(t *testing.T) {
 			},
 		},
 	}
-	ra := grpcRouteToAttrs(gr, gwStore, gcStore, &Config{})
+	ra := grpcRouteToAttrs(gr, gwStore, gcStore, &Config{}, nil)
 
 	assert.Equal(t, RouteKindGRPCRoute, ra.Kind)
 	assert.Equal(t, "svc", ra.Name)
@@ -158,7 +158,7 @@ func TestGRPCRouteToAttrs_EmitStatusConditions_Stamps(t *testing.T) {
 			}},
 		}},
 	}
-	ra := grpcRouteToAttrs(gr, newGatewayStore(), newGatewayClassStore(), &Config{EmitStatusConds: true})
+	ra := grpcRouteToAttrs(gr, newGatewayStore(), newGatewayClassStore(), &Config{EmitStatusConds: true}, nil)
 	require.NotNil(t, ra.Accepted)
 	require.NotNil(t, ra.ResolvedRefs)
 	assert.True(t, *ra.Accepted)
@@ -176,7 +176,7 @@ func TestGRPCRouteToAttrs_EmitStatusConditions_Off_NoStatus(t *testing.T) {
 			}},
 		}},
 	}
-	ra := grpcRouteToAttrs(gr, newGatewayStore(), newGatewayClassStore(), &Config{EmitStatusConds: false})
+	ra := grpcRouteToAttrs(gr, newGatewayStore(), newGatewayClassStore(), &Config{EmitStatusConds: false}, nil)
 	assert.Nil(t, ra.Accepted, "emit_status_conditions=false must leave Accepted unpopulated on GRPCRoute")
 	assert.Nil(t, ra.ResolvedRefs)
 }

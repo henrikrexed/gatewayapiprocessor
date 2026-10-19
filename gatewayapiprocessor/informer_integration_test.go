@@ -43,7 +43,7 @@ func TestInformerIntegration_AddUpdateDeleteHTTPRoute(t *testing.T) {
 	gwInf := factory.Gateway().V1().Gateways().Informer()
 	gcInf := factory.Gateway().V1().GatewayClasses().Informer()
 
-	registerHTTPRouteHandlers(hrInf, idx, gwStore, gcStore, cfg, logger)
+	registerHTTPRouteHandlers(hrInf, idx, gwStore, gcStore, cfg, nil, logger)
 	registerGatewayHandlers(gwInf, gwStore, logger)
 	registerGatewayClassHandlers(gcInf, gcStore, logger)
 
@@ -161,7 +161,7 @@ func TestInformerHandler_HTTPRouteTombstone(t *testing.T) {
 	inf := factory.Gateway().V1().HTTPRoutes().Informer()
 
 	idx := newRouteIndex()
-	registerHTTPRouteHandlers(inf, idx, newGatewayStore(), newGatewayClassStore(), &Config{}, zap.NewNop())
+	registerHTTPRouteHandlers(inf, idx, newGatewayStore(), newGatewayClassStore(), &Config{}, nil, zap.NewNop())
 
 	// Seed index directly (simulating a prior AddFunc that happened pre-tombstone).
 	idx.upsertHTTPRoute(RouteAttributes{

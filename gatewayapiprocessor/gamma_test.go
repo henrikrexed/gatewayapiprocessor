@@ -43,7 +43,7 @@ func TestGRPCRouteToAttrs_GAMMAMeshMode(t *testing.T) {
 			},
 		},
 	}
-	ra := grpcRouteToAttrs(gr, newGatewayStore(), newGatewayClassStore(), &Config{})
+	ra := grpcRouteToAttrs(gr, newGatewayStore(), newGatewayClassStore(), &Config{}, nil)
 
 	assert.Equal(t, RouteModeMesh, ra.RouteMode)
 	assert.Equal(t, "product-catalog", ra.ParentServiceName)
@@ -66,7 +66,7 @@ func TestHTTPRouteToAttrs_GAMMAMeshMode(t *testing.T) {
 			},
 		},
 	}
-	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), &Config{})
+	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), &Config{}, nil)
 
 	assert.Equal(t, RouteModeMesh, ra.RouteMode)
 	assert.Equal(t, "frontend-proxy", ra.ParentServiceName)
@@ -84,7 +84,7 @@ func TestHTTPRouteToAttrs_IngressModeDefault(t *testing.T) {
 			},
 		},
 	}
-	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), &Config{})
+	ra := httpRouteToAttrs(hr, newGatewayStore(), newGatewayClassStore(), &Config{}, nil)
 	assert.Equal(t, RouteModeIngress, ra.RouteMode, "no kind = Gateway = ingress mode")
 }
 
