@@ -97,16 +97,25 @@ func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLo
 	// Both informers receive the same kubernetes clientset so they share
 	// one HTTP connection pool to the API server (Copilot review on
 	// PR #66) rather than opening one per informer.
+	//
+	// Gate decoupling (ISI-6178 / design D5): the shared Service informer now
+	// serves two features — the ClusterIP reverse-lookup index
+	// (backendref_fallback) and the use-waypoint label cache (GAMMA waypoint
+	// attribution). Start it when EITHER is enabled, and build only the indexes
+	// the enabled features need so no feature pays for the other's index.
 	var ipIndex *serviceIPIndex
+	var wpIndex *waypointIndex
 	var podIndex *podIPIndex
-	if cfg.BackendRefFallback.Enabled {
+	buildIP := cfg.BackendRefFallback.Enabled
+	buildWaypoint := cfg.Mesh.WaypointEnabled()
+	if buildIP || buildWaypoint {
 		k8sClient, err := kubernetes.NewForConfig(restCfg)
 		if err != nil {
 			return nil, nil, fmt.Errorf("build kubernetes clientset: %w", err)
 		}
 
 		var svcInformers []cache.SharedIndexInformer
-		svcInformers, ipIndex, err = startServiceInformer(ctx, logger, k8sClient, cfg)
+		svcInformers, ipIndex, wpIndex, err = startServiceInformer(ctx, logger, k8sClient, cfg, buildIP, buildWaypoint)
 		if err != nil {
 			return nil, nil, fmt.Errorf("start service informer: %w", err)
 		}
@@ -115,7 +124,9 @@ func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLo
 		// EndpointSlice informer (ISI-875). Defaults to on whenever
 		// BackendRefFallback.Enabled is true; opt out via
 		// `backendref_fallback.pod_ip: false` on scale-sensitive clusters.
-		if cfg.BackendRefFallback.PodIPEnabled() {
+		// Scoped to backendref_fallback only — waypoint attribution never needs
+		// PodIP resolution.
+		if cfg.BackendRefFallback.Enabled && cfg.BackendRefFallback.PodIPEnabled() {
 			var esInformers []cache.SharedIndexInformer
 			esInformers, podIndex, err = startEndpointSliceInformer(ctx, logger, k8sClient, cfg)
 			if err != nil {
@@ -137,7 +148,7 @@ func newInformers(ctx context.Context, logger *zap.Logger, cfg *Config) (RouteLo
 		// factories stop when ctx.Done() fires; nothing to do here beyond that.
 		return nil
 	}
-	return &combinedLookup{routes: index, ips: ipIndex, pods: podIndex}, stop, nil
+	return &combinedLookup{routes: index, ips: ipIndex, pods: podIndex, waypoints: wpIndex}, stop, nil
 }
 
 func buildRESTConfig(cfg *Config) (*rest.Config, error) {
@@ -265,31 +276,9 @@ func httpRouteToAttrs(hr *gwv1.HTTPRoute, gwStore *gatewayStore, gcStore *gatewa
 		RouteMode: RouteModeIngress,
 	}
 	if len(hr.Spec.ParentRefs) > 0 {
-		pr := hr.Spec.ParentRefs[0]
-		ra.ParentRef = formatParentRef(pr, hr.Namespace)
-		ns := hr.Namespace
-		if pr.Namespace != nil && *pr.Namespace != "" {
-			ns = string(*pr.Namespace)
-		}
-		if isServiceParent(pr) {
-			// GAMMA mesh-mode route: the parent IS a backend Service. No
-			// Gateway/GatewayClass attribution; stamp parent service identity.
-			ra.RouteMode = RouteModeMesh
-			ra.ParentServiceName = string(pr.Name)
-			ra.ParentServiceNamespace = ns
-		} else if gw, ok := gwStore.get(ns, string(pr.Name)); ok {
-			ra.GatewayName = gw.Name
-			ra.GatewayNamespace = gw.Namespace
-			ra.GatewayUID = string(gw.UID)
-			if pr.SectionName != nil {
-				ra.GatewayListenerName = string(*pr.SectionName)
-			}
-			ra.GatewayClassName = string(gw.Spec.GatewayClassName)
-			if gc, ok2 := gcStore.get(ra.GatewayClassName); ok2 {
-				ra.GatewayClassControllerName = string(gc.Spec.ControllerName)
-			}
-		}
+		applyParentRef(&ra, hr.Spec.ParentRefs[0], hr.Namespace, gwStore, gcStore, cfg)
 	}
+	ra.RuleNames = httpRuleNames(hr)
 	if cfg.EmitStatusConds {
 		ra.Accepted, ra.ResolvedRefs = statusFlags(hr.Status.Parents)
 	}
@@ -305,34 +294,138 @@ func grpcRouteToAttrs(gr *gwv1.GRPCRoute, gwStore *gatewayStore, gcStore *gatewa
 		RouteMode: RouteModeIngress,
 	}
 	if len(gr.Spec.ParentRefs) > 0 {
-		pr := gr.Spec.ParentRefs[0]
-		ra.ParentRef = formatParentRef(pr, gr.Namespace)
-		ns := gr.Namespace
-		if pr.Namespace != nil && *pr.Namespace != "" {
-			ns = string(*pr.Namespace)
-		}
-		if isServiceParent(pr) {
-			// GAMMA mesh-mode route — see httpRouteToAttrs comment.
-			ra.RouteMode = RouteModeMesh
-			ra.ParentServiceName = string(pr.Name)
-			ra.ParentServiceNamespace = ns
-		} else if gw, ok := gwStore.get(ns, string(pr.Name)); ok {
-			ra.GatewayName = gw.Name
-			ra.GatewayNamespace = gw.Namespace
-			ra.GatewayUID = string(gw.UID)
-			if pr.SectionName != nil {
-				ra.GatewayListenerName = string(*pr.SectionName)
-			}
-			ra.GatewayClassName = string(gw.Spec.GatewayClassName)
-			if gc, ok2 := gcStore.get(ra.GatewayClassName); ok2 {
-				ra.GatewayClassControllerName = string(gc.Spec.ControllerName)
-			}
-		}
+		applyParentRef(&ra, gr.Spec.ParentRefs[0], gr.Namespace, gwStore, gcStore, cfg)
 	}
+	ra.RuleNames = grpcRuleNames(gr)
 	if cfg.EmitStatusConds {
 		ra.Accepted, ra.ResolvedRefs = statusFlags(gr.Status.Parents)
 	}
 	return ra
+}
+
+// applyParentRef resolves a route's first parentRef into ra. It is shared by
+// httpRouteToAttrs and grpcRouteToAttrs so HTTP and GRPC enrichment stay
+// symmetric (design §4.6). It fills, in GAMMA-aware order:
+//
+//   - ParentRef string + ParentKind (always; default "Gateway" per spec)
+//   - Service-parent (GAMMA mesh): RouteMode=mesh, parent Service name/ns/port
+//     (§4.1), and producer/consumer role (§4.4)
+//   - Gateway-parent: Gateway/GatewayClass attribution, plus class-based
+//     waypoint detection (§4.2/§4.3) — a Gateway whose gatewayClassName is a
+//     configured waypoint class flips the route to mesh and stamps the
+//     waypoint implementation + identity.
+func applyParentRef(ra *RouteAttributes, pr gwv1.ParentReference, routeNS string, gwStore *gatewayStore, gcStore *gatewayClassStore, cfg *Config) {
+	ra.ParentRef = formatParentRef(pr, routeNS)
+	ra.ParentKind = parentKindOf(pr)
+
+	ns := routeNS
+	if pr.Namespace != nil && *pr.Namespace != "" {
+		ns = string(*pr.Namespace)
+	}
+
+	if isServiceParent(pr) {
+		// GAMMA mesh-mode route: the parent IS a backend Service. No
+		// Gateway/GatewayClass attribution; stamp parent Service identity.
+		ra.RouteMode = RouteModeMesh
+		ra.ParentServiceName = string(pr.Name)
+		ra.ParentServiceNamespace = ns
+		if pr.Port != nil {
+			ra.ParentServicePort = int32(*pr.Port)
+		}
+		classifyRouteRole(ra, routeNS, cfg)
+		return
+	}
+
+	gw, ok := gwStore.get(ns, string(pr.Name))
+	if !ok {
+		return
+	}
+	ra.GatewayName = gw.Name
+	ra.GatewayNamespace = gw.Namespace
+	ra.GatewayUID = string(gw.UID)
+	if pr.SectionName != nil {
+		ra.GatewayListenerName = string(*pr.SectionName)
+	}
+	ra.GatewayClassName = string(gw.Spec.GatewayClassName)
+	if gc, ok2 := gcStore.get(ra.GatewayClassName); ok2 {
+		ra.GatewayClassControllerName = string(gc.Spec.ControllerName)
+	}
+
+	// Class-based waypoint detection (§4.2/§4.3): a Gateway whose class is a
+	// configured waypoint class is a mesh data-plane waypoint, not a
+	// north-south ingress. Flip the route mode and stamp the waypoint identity
+	// (the waypoint Gateway itself).
+	if impl := cfg.Mesh.waypointImplForClass(ra.GatewayClassName); impl != "" {
+		ra.RouteMode = RouteModeMesh
+		ra.WaypointImplementation = impl
+		ra.WaypointName = gw.Name
+		ra.WaypointNamespace = gw.Namespace
+	}
+}
+
+// classifyRouteRole stamps producer/consumer role on a Service-parent mesh
+// route (§4.4): a route sharing its parent Service's namespace is a producer
+// route (owned by the service team); any other namespace is a consumer route
+// (client-team traffic-policy override). No-op when disabled or when the parent
+// Service namespace is unknown.
+func classifyRouteRole(ra *RouteAttributes, routeNS string, cfg *Config) {
+	if !cfg.Mesh.ClassifyRouteRoleEnabled() || ra.ParentServiceNamespace == "" {
+		return
+	}
+	if routeNS == ra.ParentServiceNamespace {
+		ra.RouteRole = RouteRoleProducer
+	} else {
+		ra.RouteRole = RouteRoleConsumer
+	}
+}
+
+// parentKindOf returns the parentRef Kind, defaulting to "Gateway" per the
+// Gateway API spec when Kind is nil/empty.
+func parentKindOf(pr gwv1.ParentReference) string {
+	if pr.Kind != nil && *pr.Kind != "" {
+		return string(*pr.Kind)
+	}
+	return "Gateway"
+}
+
+// httpRuleNames projects HTTPRouteRule.Name by rule index (§4.5). Returns nil
+// when no rule carries a name so unnamed-rule routes keep a nil slice (no
+// allocation, and stampRouteAttrs stamps nothing).
+func httpRuleNames(hr *gwv1.HTTPRoute) []string {
+	if len(hr.Spec.Rules) == 0 {
+		return nil
+	}
+	names := make([]string, len(hr.Spec.Rules))
+	any := false
+	for i, rule := range hr.Spec.Rules {
+		if rule.Name != nil && *rule.Name != "" {
+			names[i] = string(*rule.Name)
+			any = true
+		}
+	}
+	if !any {
+		return nil
+	}
+	return names
+}
+
+// grpcRuleNames mirrors httpRuleNames for GRPCRoute (§4.5/§4.6).
+func grpcRuleNames(gr *gwv1.GRPCRoute) []string {
+	if len(gr.Spec.Rules) == 0 {
+		return nil
+	}
+	names := make([]string, len(gr.Spec.Rules))
+	any := false
+	for i, rule := range gr.Spec.Rules {
+		if rule.Name != nil && *rule.Name != "" {
+			names[i] = string(*rule.Name)
+			any = true
+		}
+	}
+	if !any {
+		return nil
+	}
+	return names
 }
 
 // isServiceParent reports whether a ParentReference targets a core-group

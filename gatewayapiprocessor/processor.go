@@ -316,6 +316,28 @@ func (p *gatewayAPIProcessor) stampCRMetadata(attrs pcommon.Map, r parser.Result
 		return
 	}
 	p.stampRouteAttrs(attrs, ra)
+	stampRuleName(attrs, ra, r.RuleIndex)
+}
+
+// stampRuleName resolves the matched rule's name from the route's projected
+// RuleNames using the parser-derived rule index (§4.5). Named rules
+// (HTTPRouteRule.Name / GRPCRouteRule.Name) map a positional rule index to a
+// stable name. No-op when the parser produced no rule index (RuleIndex < 0),
+// when the index is out of range, or when the matched rule is unnamed — the
+// existing positional k8s.httproute.rule_index remains the fallback identity.
+func stampRuleName(attrs pcommon.Map, ra RouteAttributes, ruleIndex int) {
+	if ruleIndex < 0 || ruleIndex >= len(ra.RuleNames) {
+		return
+	}
+	name := ra.RuleNames[ruleIndex]
+	if name == "" {
+		return
+	}
+	if ra.Kind == RouteKindGRPCRoute {
+		putString(attrs, AttrGRPCRouteRuleName, name)
+	} else {
+		putString(attrs, AttrHTTPRouteRuleName, name)
+	}
 }
 
 // stampRouteAttrs writes all enrichment fields from a RouteAttributes.
@@ -333,6 +355,15 @@ func (p *gatewayAPIProcessor) stampRouteAttrs(attrs pcommon.Map, ra RouteAttribu
 			putString(attrs, AttrGRPCRouteParentRef, ra.ParentRef)
 		} else {
 			putString(attrs, AttrHTTPRouteParentRef, ra.ParentRef)
+		}
+	}
+	// Parent kind (GAMMA §4.1): "Gateway" or "Service", stamped for both
+	// ingress and mesh routes.
+	if ra.ParentKind != "" {
+		if ra.Kind == RouteKindGRPCRoute {
+			putString(attrs, AttrGRPCRouteParentKind, ra.ParentKind)
+		} else {
+			putString(attrs, AttrHTTPRouteParentKind, ra.ParentKind)
 		}
 	}
 	if p.cfg.EmitStatusConds {
@@ -376,12 +407,43 @@ func (p *gatewayAPIProcessor) stampRouteAttrs(attrs pcommon.Map, ra RouteAttribu
 		putString(attrs, AttrGatewayClassController, ra.GatewayClassControllerName)
 	}
 
-	// GAMMA mesh-mode: stamp parent Service identity.
+	// GAMMA mesh-mode: stamp parent Service identity (§4.1).
 	if ra.ParentServiceName != "" {
 		putString(attrs, AttrParentServiceName, ra.ParentServiceName)
 	}
 	if ra.ParentServiceNamespace != "" {
 		putString(attrs, AttrParentServiceNamespace, ra.ParentServiceNamespace)
+	}
+	if ra.ParentServicePort > 0 {
+		attrs.PutInt(AttrParentServicePort, int64(ra.ParentServicePort))
+	}
+
+	// Producer/consumer role (§4.4).
+	if ra.RouteRole != "" {
+		putString(attrs, AttrRouteRole, ra.RouteRole)
+	}
+
+	// Waypoint attribution (§4.3). The projection may have resolved a waypoint
+	// from the parent Gateway's class (class-based path). For Service-parent
+	// mesh routes we additionally consult the live Service informer cache for
+	// an istio.io/use-waypoint label (label-based path, D5) — resolved here so
+	// it always reflects the current label, independent of route re-projection.
+	impl, wpName, wpNS := ra.WaypointImplementation, ra.WaypointName, ra.WaypointNamespace
+	if impl == "" && ra.RouteMode == RouteModeMesh && ra.ParentServiceName != "" {
+		if wl, ok := p.lookup.(WaypointLookup); ok {
+			if li, ln, lns, found := wl.LookupWaypointForService(ra.ParentServiceNamespace, ra.ParentServiceName); found {
+				impl, wpName, wpNS = li, ln, lns
+			}
+		}
+	}
+	if impl != "" {
+		putString(attrs, AttrWaypointImplementation, impl)
+		if wpName != "" {
+			putString(attrs, AttrWaypointName, wpName)
+		}
+		if wpNS != "" {
+			putString(attrs, AttrWaypointNamespace, wpNS)
+		}
 	}
 
 	stampPolicyAttrs(attrs, ra)

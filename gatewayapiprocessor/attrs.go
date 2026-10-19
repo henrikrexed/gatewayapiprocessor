@@ -17,6 +17,8 @@ const (
 	AttrHTTPRouteRuleIndex    = "k8s.httproute.rule_index"
 	AttrHTTPRouteMatchIndex   = "k8s.httproute.match_index"
 	AttrHTTPRouteParentRef    = "k8s.httproute.parent_ref"
+	AttrHTTPRouteParentKind   = "k8s.httproute.parent.kind"
+	AttrHTTPRouteRuleName     = "k8s.httproute.rule.name"
 	AttrHTTPRouteAccepted     = "k8s.httproute.accepted"
 	AttrHTTPRouteResolvedRefs = "k8s.httproute.resolved_refs"
 
@@ -24,6 +26,8 @@ const (
 	AttrGRPCRouteNamespace    = "k8s.grpcroute.namespace"
 	AttrGRPCRouteUID          = "k8s.grpcroute.uid"
 	AttrGRPCRouteParentRef    = "k8s.grpcroute.parent_ref"
+	AttrGRPCRouteParentKind   = "k8s.grpcroute.parent.kind"
+	AttrGRPCRouteRuleName     = "k8s.grpcroute.rule.name"
 	AttrGRPCRouteAccepted     = "k8s.grpcroute.accepted"
 	AttrGRPCRouteResolvedRefs = "k8s.grpcroute.resolved_refs"
 
@@ -34,8 +38,27 @@ const (
 	AttrRouteMode = "gateway.networking.k8s.io/route-mode"
 
 	// Mesh-mode parent Service identity. Mirrors AttrGateway* for ingress mode.
+	// GAMMA (Gateway API for Mesh): the route's parentRef is a Service rather
+	// than a Gateway. ISI-6178 §4.1 adds the parent Service port alongside the
+	// name/namespace that already shipped.
 	AttrParentServiceName      = "k8s.service.parent.name"
 	AttrParentServiceNamespace = "k8s.service.parent.namespace"
+	AttrParentServicePort      = "k8s.service.parent.port"
+
+	// Waypoint attribution (GAMMA, ISI-6178 §4.3). A waypoint is the mesh
+	// data-plane proxy a route is programmed into. implementation is a bounded
+	// enum (istio-ambient|kgateway|istio-eastwest); name/namespace identify the
+	// waypoint Gateway (class-based path) or the waypoint resolved from the
+	// parent Service's istio.io/use-waypoint label (label-based path).
+	AttrWaypointImplementation = "k8s.gatewayapi.waypoint.implementation"
+	AttrWaypointName           = "k8s.gatewayapi.waypoint.name"
+	AttrWaypointNamespace      = "k8s.gatewayapi.waypoint.namespace"
+
+	// Producer vs consumer route role (GAMMA, ISI-6178 §4.4). A mesh route in
+	// the SAME namespace as its parent Service is a producer route (owned by the
+	// service team); a route in a DIFFERENT namespace is a consumer route
+	// (traffic-policy override by a client team). Stamped only in mesh mode.
+	AttrRouteRole = "k8s.gatewayapi.route.role"
 
 	AttrRawRouteName = "k8s.gatewayapi.raw_route_name"
 	AttrParser       = "k8s.gatewayapi.parser"
@@ -61,4 +84,22 @@ const (
 const (
 	RouteModeIngress = "ingress"
 	RouteModeMesh    = "mesh"
+)
+
+// Route role values for AttrRouteRole (GAMMA producer/consumer, ISI-6178 §4.4).
+const (
+	RouteRoleProducer = "producer"
+	RouteRoleConsumer = "consumer"
+)
+
+// Waypoint implementation values for AttrWaypointImplementation (ISI-6178 §4.3).
+// Bounded enum keyed off the parent Gateway's gatewayClassName (class-based
+// path) or the mesh vendor that owns the istio.io/use-waypoint label
+// (label-based path). New implementations are added via config
+// (mesh.waypoint_class_names) without a code change; the mapping below is the
+// built-in default set the Architect sign-off (D3) enumerated.
+const (
+	WaypointImplIstioAmbient  = "istio-ambient"
+	WaypointImplKgateway      = "kgateway"
+	WaypointImplIstioEastWest = "istio-eastwest"
 )

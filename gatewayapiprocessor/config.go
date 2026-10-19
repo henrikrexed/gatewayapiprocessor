@@ -3,6 +3,7 @@ package gatewayapiprocessor
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -28,6 +29,7 @@ type Config struct {
 	Enrich             EnrichConfig       `mapstructure:"enrich"`
 	EmitStatusConds    bool               `mapstructure:"emit_status_conditions"`
 	BackendRefFallback BackendRefFallback `mapstructure:"backendref_fallback"`
+	Mesh               MeshConfig         `mapstructure:"mesh"`
 
 	// InformerSyncTimeout bounds Start() waiting for informer caches to warm up.
 	// Default 30s per processor-spec §2.4.
@@ -126,6 +128,83 @@ type BackendRefFallback struct {
 	PodIP *bool `mapstructure:"pod_ip"`
 }
 
+// MeshConfig holds the GAMMA (Gateway API for Mesh) enrichment knobs added in
+// ISI-6178. All of it is additive and defaults to the behaviour described in
+// the approved B.1 design doc (ISI-6175, decisions D1–D6).
+type MeshConfig struct {
+	// WaypointClassNames enumerates the gatewayClassName values that identify a
+	// mesh waypoint Gateway. A route whose parent Gateway uses one of these
+	// classes is classified as mesh (§4.2) and stamped with a waypoint
+	// implementation (§4.3). Data-driven so a new mesh impl needs a config
+	// change, not a code change (D2/D3). Empty disables class-based waypoint
+	// detection. Default: [istio-waypoint, kgateway-waypoint, istio-eastwest].
+	WaypointClassNames []string `mapstructure:"waypoint_class_names"`
+
+	// ClassifyRouteRole toggles producer/consumer role classification on mesh
+	// routes (§4.4). nil = default = enabled. Set false to suppress the
+	// k8s.gatewayapi.route.role attribute.
+	ClassifyRouteRole *bool `mapstructure:"classify_route_role"`
+
+	// InferServiceParent toggles the nil-Kind parent-Service inference fallback
+	// (§4.1 / D4). nil = default = enabled. When a core-group parentRef omits
+	// Kind and no Gateway with that name exists once caches are warm, the route
+	// is reclassified as mesh. The inference machinery itself is tracked
+	// separately (follow-up to ISI-6178); this flag reserves the config surface
+	// so operators can pre-set it and the default is stable.
+	InferServiceParent *bool `mapstructure:"infer_service_parent"`
+}
+
+// ClassifyRouteRoleEnabled reports whether producer/consumer classification is
+// on. Defaults to true (nil pointer) per D4-adjacent §4.4.
+func (m MeshConfig) ClassifyRouteRoleEnabled() bool {
+	return m.ClassifyRouteRole == nil || *m.ClassifyRouteRole
+}
+
+// InferServiceParentEnabled reports whether nil-Kind inference is on. Defaults
+// to true (nil pointer) per D4.
+func (m MeshConfig) InferServiceParentEnabled() bool {
+	return m.InferServiceParent == nil || *m.InferServiceParent
+}
+
+// WaypointEnabled reports whether any waypoint detection is configured. Drives
+// the decoupled Service-informer start gate (D5): the waypoint label-cache is
+// only built when at least one waypoint class is configured.
+func (m MeshConfig) WaypointEnabled() bool {
+	return len(m.WaypointClassNames) > 0
+}
+
+// waypointImplForClass maps a gatewayClassName to its waypoint implementation
+// enum, or "" when the class is not a configured waypoint class. The mapping is
+// name-substring based so operator-defined classes that embed the vendor token
+// (e.g. "prod-istio-waypoint") still resolve; exact configured names always
+// match. Precedence: istio-eastwest before istio (east-west is the more
+// specific Istio form), then kgateway, then generic istio-ambient.
+func (m MeshConfig) waypointImplForClass(className string) string {
+	if className == "" {
+		return ""
+	}
+	matched := false
+	for _, c := range m.WaypointClassNames {
+		if c == className {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return ""
+	}
+	switch {
+	case strings.Contains(className, "eastwest") || strings.Contains(className, "east-west"):
+		return WaypointImplIstioEastWest
+	case strings.Contains(className, "kgateway"):
+		return WaypointImplKgateway
+	default:
+		// Any other configured waypoint class is treated as an Istio ambient
+		// waypoint (istio-waypoint is the canonical GAMMA class name).
+		return WaypointImplIstioAmbient
+	}
+}
+
 // PodIPEnabled reports whether the EndpointSlice informer that drives the
 // PodIP fallback path should be started. Defaults to true so the feature
 // is on as soon as BackendRefFallback.Enabled flips on; an explicit
@@ -219,6 +298,12 @@ func (c *Config) Validate() error {
 	for i, p := range c.Watch.Policies {
 		if p.Version == "" || p.Resource == "" {
 			return fmt.Errorf("gatewayapiprocessor: watch.policies[%d] requires version and resource (group may be empty for core API)", i)
+		}
+	}
+
+	for i, name := range c.Mesh.WaypointClassNames {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("gatewayapiprocessor: mesh.waypoint_class_names[%d] must not be empty", i)
 		}
 	}
 

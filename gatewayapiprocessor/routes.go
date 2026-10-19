@@ -26,6 +26,13 @@ type RouteAttributes struct {
 	GatewayClassName           string
 	GatewayClassControllerName string
 
+	// ParentKind is the parentRef.kind the route attached to ("Gateway" or
+	// "Service"), defaulting to "Gateway" per the Gateway API spec when the
+	// parentRef omits Kind. Always populated from the first parentRef so the
+	// k8s.{http,grpc}route.parent.kind attribute can be stamped for both
+	// ingress and mesh routes (ISI-6178 §4.1).
+	ParentKind string
+
 	// RouteMode is "ingress" (parentRef.kind=Gateway) or "mesh"
 	// (parentRef.kind=Service, GAMMA). Empty when the parent kind couldn't be
 	// determined; downstream stamping treats empty as "ingress" for back-compat.
@@ -34,6 +41,30 @@ type RouteAttributes struct {
 	// Mesh-mode parent Service (GAMMA). Populated only when RouteMode == "mesh".
 	ParentServiceName      string
 	ParentServiceNamespace string
+	// ParentServicePort is the parentRef.port for a Service parent, or 0 when
+	// the parentRef omits a port (ISI-6178 §4.1). Nil-safe: 0 means "not set"
+	// and is not stamped.
+	ParentServicePort int32
+
+	// RouteRole is "producer" or "consumer" for mesh routes (GAMMA, §4.4).
+	// Empty for ingress routes and when role classification is disabled.
+	RouteRole string
+
+	// Waypoint attribution (GAMMA, §4.3). Populated from the parent Gateway's
+	// gatewayClassName when that class is a known waypoint class (class-based
+	// path). The label-based path (parent Service istio.io/use-waypoint) is
+	// resolved at stamp time against the live Service informer cache, so those
+	// fields may be filled there instead — see stampRouteAttrs.
+	WaypointImplementation string
+	WaypointName           string
+	WaypointNamespace      string
+
+	// RuleNames holds the per-rule Name (HTTPRouteRule.Name / GRPCRouteRule.Name,
+	// Gateway API v1.1+ experimental / v1.4+ standard) indexed by rule position.
+	// A nil/unnamed rule yields an empty string at that index. stampRouteAttrs
+	// resolves RuleNames[rule_index] → k8s.{http,grpc}route.rule.name when the
+	// parser produced a rule index (ISI-6178 §4.5).
+	RuleNames []string
 
 	// Policies holds Gateway API policy references whose targetRefs[*]
 	// point at this route. Populated by the policy informer (see
@@ -95,6 +126,7 @@ type staticLookup struct {
 	backendIndexDropped map[string]struct{}          // key = "<ns>/<service>" — sticky once-dropped
 	serviceIPs          map[string]nsName            // key = canonical IP literal — Phase 1 ClusterIP (ISI-851)
 	podIPs              map[string]nsName            // key = canonical IP literal — Phase 2 PodIP (ISI-875)
+	waypoints           map[string]waypointInfo      // key = "<ns>/<service>" — use-waypoint label cache (ISI-6178)
 }
 
 func newStaticLookup() *staticLookup {
@@ -105,7 +137,23 @@ func newStaticLookup() *staticLookup {
 		backendIndexDropped: make(map[string]struct{}),
 		serviceIPs:          make(map[string]nsName),
 		podIPs:              make(map[string]nsName),
+		waypoints:           make(map[string]waypointInfo),
 	}
+}
+
+// putWaypoint seeds a Service -> waypoint mapping. Tests use this to simulate a
+// Service carrying the istio.io/use-waypoint label without a real informer.
+func (s *staticLookup) putWaypoint(ns, svc, impl, wpName, wpNS string) {
+	s.waypoints[ns+"/"+svc] = waypointInfo{Implementation: impl, Name: wpName, Namespace: wpNS}
+}
+
+// LookupWaypointForService satisfies WaypointLookup for tests.
+func (s *staticLookup) LookupWaypointForService(ns, name string) (string, string, string, bool) {
+	wi, ok := s.waypoints[ns+"/"+name]
+	if !ok {
+		return "", "", "", false
+	}
+	return wi.Implementation, wi.Name, wi.Namespace, true
 }
 
 func (s *staticLookup) put(kind RouteKind, ns, name string, attrs RouteAttributes) {
@@ -202,9 +250,10 @@ func (s *staticLookup) LookupServiceByIP(ip string) (string, string, bool) {
 // ServiceIPLookup before consulting the IP indices — that lets
 // staticLookup-only tests stay source-compatible.
 type combinedLookup struct {
-	routes *routeIndex
-	ips    *serviceIPIndex // ISI-851 ClusterIP index
-	pods   *podIPIndex     // ISI-875 EndpointSlice→PodIP index (may be nil)
+	routes    *routeIndex
+	ips       *serviceIPIndex // ISI-851 ClusterIP index
+	pods      *podIPIndex     // ISI-875 EndpointSlice→PodIP index (may be nil)
+	waypoints *waypointIndex  // ISI-6178 use-waypoint label cache (may be nil)
 }
 
 func (c *combinedLookup) LookupRoute(kind RouteKind, ns, name string) (RouteAttributes, bool) {
@@ -236,6 +285,16 @@ func (c *combinedLookup) LookupServiceByIP(ip string) (string, string, bool) {
 		return c.pods.LookupPodIP(ip)
 	}
 	return "", "", false
+}
+
+// LookupWaypointForService satisfies WaypointLookup (ISI-6178 §4.3). Returns
+// ok=false when no waypoint index is configured (waypoint attribution off) or
+// the Service carries no use-waypoint label.
+func (c *combinedLookup) LookupWaypointForService(ns, name string) (string, string, string, bool) {
+	if c.waypoints == nil {
+		return "", "", "", false
+	}
+	return c.waypoints.LookupWaypointForService(ns, name)
 }
 
 func routeKey(kind RouteKind, ns, name string) string {
