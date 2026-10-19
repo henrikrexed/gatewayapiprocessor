@@ -330,7 +330,7 @@ func applyParentRef(ra *RouteAttributes, pr gwv1.ParentReference, routeNS string
 		ra.ParentServiceName = string(pr.Name)
 		ra.ParentServiceNamespace = ns
 		if pr.Port != nil {
-			ra.ParentServicePort = int32(*pr.Port)
+			ra.ParentServicePort = *pr.Port
 		}
 		classifyRouteRole(ra, routeNS, cfg)
 		return
