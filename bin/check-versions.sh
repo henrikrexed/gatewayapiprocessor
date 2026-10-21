@@ -49,14 +49,20 @@ echo
 # ----------------------------------------------------------------------------
 # 1. Every image reference under deploy/ must use the pinned tag.
 # ----------------------------------------------------------------------------
-echo "[1/4] deploy/ — all otelcol-gatewayapi image references match VERSIONS.md tag"
-mismatch=$(grep -RhnoE 'ghcr\.io/henrikrexed/otelcol-gatewayapi:[A-Za-z0-9._+-]+' deploy/ 2>/dev/null \
+echo "[1/4] deploy/ + README.md + docs/ — all otelcol-gatewayapi image references match VERSIONS.md tag"
+# The root README.md and docs/ copy-paste the pinned image too; a drifted tag
+# there misleads demo operators even though deploy/ is clean. Scan all three.
+scan_paths=(deploy/ README.md)
+[[ -d docs ]] && scan_paths+=(docs/)
+# No `grep -h`: keep the file:line prefix so a mismatch names the drifting file
+# (-o still trims the match to the ref; the "<path>:<line>:" prefix survives).
+mismatch=$(grep -rnoE 'ghcr\.io/henrikrexed/otelcol-gatewayapi:[A-Za-z0-9._+-]+' "${scan_paths[@]}" 2>/dev/null \
   | grep -v ":${COLLECTOR_TAG}\$" || true)
 if [[ -n "$mismatch" ]]; then
-  err "deploy/ contains otelcol-gatewayapi image with tag != $COLLECTOR_TAG:"
+  err "otelcol-gatewayapi image tag != $COLLECTOR_TAG (file:line:ref):"
   echo "$mismatch" | sed 's/^/    /'
 else
-  ok "deploy/ image tags == $COLLECTOR_TAG"
+  ok "deploy/ + README.md + docs/ image tags == $COLLECTOR_TAG"
 fi
 
 # ----------------------------------------------------------------------------
@@ -90,6 +96,29 @@ if [[ "$bc_ocb" != "$OCB_VERSION" ]]; then
   err "builder-config.yaml dist.version=$bc_version (ocb=$bc_ocb) != VERSIONS.md $OCB_VERSION"
 else
   ok "builder-config.yaml dist.version=$bc_version (ocb=$bc_ocb)"
+fi
+
+# builder-config.yaml component gomod pins — these ~15 lines decide which
+# collector code actually links. dist.version agreeing with VERSIONS.md is not
+# enough: a component left behind at an old release-train version still builds
+# green but links stale code. Collector-core (go.opentelemetry.io/collector/*)
+# and contrib (opentelemetry-collector-contrib/*) modules on the unstable v0.x
+# train move in lockstep with the collector version, so every v0.x pin must
+# equal v$OCB_VERSION.
+# ponytail: stable modules (v1+/v2+, e.g. k8sattributesprocessor v1.2.0) version
+# independently and have no authoritative pin in VERSIONS.md, so they are NOT
+# validated here. Upgrade path: record stable-module versions in VERSIONS.md and
+# extend this check to assert them too.
+gomod_drift=$(awk -v ocb="v${OCB_VERSION}" '
+  /gomod:/ && /(go\.opentelemetry\.io\/collector\/|github\.com\/open-telemetry\/opentelemetry-collector-contrib\/)/ {
+    ver=$NF
+    if (ver ~ /^v0\./ && ver != ocb) print NR": "$0
+  }' builder-config.yaml)
+if [[ -n "$gomod_drift" ]]; then
+  err "builder-config.yaml collector/contrib v0.x gomod pin(s) != v$OCB_VERSION (line: entry):"
+  echo "$gomod_drift" | sed 's/^/    /'
+else
+  ok "builder-config.yaml collector/contrib v0.x gomod pins == v$OCB_VERSION"
 fi
 
 # ----------------------------------------------------------------------------

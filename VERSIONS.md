@@ -74,8 +74,19 @@ Source: [ISI-753](https://paperclip.isitobservable.com/ISI/issues/ISI-753).
 
 - Custom collector: `ghcr.io/henrikrexed/otelcol-gatewayapi:2026-10-21`
   - Also tagged `:latest` until next version bump (semver path; published by `release.yml`).
-  - Date-stamped pins (e.g. `:2026-04-21`) are published by `.github/workflows/publish-ocb-image.yml` on `ocb-YYYY-MM-DD` tag pushes.
+  - Date-stamped pins (e.g. `:2026-04-21`) are published by `.github/workflows/publish-ocb-image.yml` on `ocb-YYYY-MM-DD` tag pushes. That workflow runs the same cosign signing + Trivy scan + CycloneDX SBOM steps as the semver `release.yml` path.
   - Multi-arch: `linux/amd64`, `linux/arm64`.
+
+### Published digests
+
+An independently-verifiable pin: the immutable `@sha256:` digest behind each
+mutable date tag. `publish-ocb-image.yml` prints the ready-to-paste line to its
+run summary (step "Print published image refs + record digest"); copy it here
+after each publish so a consumer can pin by digest and `cosign verify` it.
+
+| Date tag     | Digest (`ghcr.io/henrikrexed/gatewayapiprocessor-collector@...`) |
+| ------------ | ---------------------------------------------------------------- |
+| `2026-04-21` | _pending — record from the next `publish-ocb-image.yml` run_     |
 
 ## Update procedure
 
