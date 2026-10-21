@@ -49,11 +49,20 @@ echo
 # ----------------------------------------------------------------------------
 # 1. Every image reference under deploy/ must use the pinned tag.
 # ----------------------------------------------------------------------------
-echo "[1/4] deploy/ + README.md + docs/ — all otelcol-gatewayapi image references match VERSIONS.md tag"
+echo "[1/5] deploy/ + README.md + docs/ — all otelcol-gatewayapi image references match VERSIONS.md tag"
 # The root README.md and docs/ copy-paste the pinned image too; a drifted tag
 # there misleads demo operators even though deploy/ is clean. Scan all three.
+# (docs/ carries no image ref today, but keeping it in scope means a future doc
+# that pastes the image is covered; the version *prose* in docs/ is validated
+# separately in check [5/5].)
 scan_paths=(deploy/ README.md)
 [[ -d docs ]] && scan_paths+=(docs/)
+# Fail closed on a scan path that doesn't resolve: otherwise `2>/dev/null` +
+# `|| true` below would flatten "unreadable path" into the same empty-output
+# "ok" as "no drift", silently reporting a path we never read as clean.
+for p in "${scan_paths[@]}"; do
+  [[ -e "$p" ]] || err "check [1/5]: scan path '$p' does not exist — cannot validate it"
+done
 # No `grep -h`: keep the file:line prefix so a mismatch names the drifting file
 # (-o still trims the match to the ref; the "<path>:<line>:" prefix survives).
 mismatch=$(grep -rnoE 'ghcr\.io/henrikrexed/otelcol-gatewayapi:[A-Za-z0-9._+-]+' "${scan_paths[@]}" 2>/dev/null \
@@ -68,7 +77,7 @@ fi
 # ----------------------------------------------------------------------------
 # 2. Makefile COLLECTOR_TAG must match VERSIONS.md tag.
 # ----------------------------------------------------------------------------
-echo "[2/4] Makefile — COLLECTOR_TAG matches VERSIONS.md"
+echo "[2/5] Makefile — COLLECTOR_TAG matches VERSIONS.md"
 mk_tag=$(awk -F'[?]=' '/^COLLECTOR_TAG[[:space:]]*\?=/ {gsub(/[[:space:]]/,"",$2); print $2; exit}' Makefile)
 if [[ "$mk_tag" != "$COLLECTOR_TAG" ]]; then
   err "Makefile COLLECTOR_TAG=$mk_tag != VERSIONS.md $COLLECTOR_TAG"
@@ -80,7 +89,7 @@ fi
 # 3. Makefile OCB_VERSION + builder-config.yaml dist.version must align with
 #    VERSIONS.md OCB version.
 # ----------------------------------------------------------------------------
-echo "[3/4] OCB version pins"
+echo "[3/5] OCB version pins"
 mk_ocb=$(awk -F'[?]=' '/^OCB_VERSION[[:space:]]*\?=/ {gsub(/[[:space:]]/,"",$2); print $2; exit}' Makefile)
 if [[ "$mk_ocb" != "$OCB_VERSION" ]]; then
   err "Makefile OCB_VERSION=$mk_ocb != VERSIONS.md $OCB_VERSION"
@@ -105,26 +114,45 @@ fi
 # and contrib (opentelemetry-collector-contrib/*) modules on the unstable v0.x
 # train move in lockstep with the collector version, so every v0.x pin must
 # equal v$OCB_VERSION.
-# ponytail: stable modules (v1+/v2+, e.g. k8sattributesprocessor v1.2.0) version
+# Note: stable modules (v1+/v2+, e.g. k8sattributesprocessor v1.2.0) version
 # independently and have no authoritative pin in VERSIONS.md, so they are NOT
 # validated here. Upgrade path: record stable-module versions in VERSIONS.md and
 # extend this check to assert them too.
+#
+# The awk below is hardened against three mutation-proven failure modes:
+#   1. Strip a trailing `# comment` before taking the version, or a held-back
+#      pin like `... v0.154.0  # ISI-999` would make the comment token the last
+#      field, dodge the /^v0\./ guard, and let real drift pass green.
+#   2. Anchor the match to a real list entry (`^ - gomod:`) so a commented-out
+#      line (which strips to blank) can't be flagged as drift on a component
+#      that isn't even linked.
+#   3. A collector/contrib entry with no version at all is unpinned — OCB would
+#      float it to latest at build time — so flag it explicitly.
 gomod_drift=$(awk -v ocb="v${OCB_VERSION}" '
-  /gomod:/ && /(go\.opentelemetry\.io\/collector\/|github\.com\/open-telemetry\/opentelemetry-collector-contrib\/)/ {
-    ver=$NF
-    if (ver ~ /^v0\./ && ver != ocb) print NR": "$0
+  {
+    line = $0
+    sub(/#.*/, "", line)              # drop trailing comment before field split
+    sub(/[[:space:]]+$/, "", line)
+  }
+  line ~ /^[[:space:]]*-[[:space:]]*gomod:[[:space:]]/ &&
+  line ~ /(go\.opentelemetry\.io\/collector\/|github\.com\/open-telemetry\/opentelemetry-collector-contrib\/)/ {
+    n = split(line, f, /[[:space:]]+/)
+    ver = f[n]
+    if (ver !~ /^v[0-9]/)              { print NR": UNPINNED (no version): "$0; next }
+    if (ver ~ /^v0\./ && ver != ocb)   { print NR": "$0 }
   }' builder-config.yaml)
 if [[ -n "$gomod_drift" ]]; then
-  err "builder-config.yaml collector/contrib v0.x gomod pin(s) != v$OCB_VERSION (line: entry):"
+  err "builder-config.yaml collector/contrib gomod pin problem(s) (line: entry):"
   echo "$gomod_drift" | sed 's/^/    /'
 else
-  ok "builder-config.yaml collector/contrib v0.x gomod pins == v$OCB_VERSION"
+  ok "builder-config.yaml collector/contrib v0.x gomod pins == v$OCB_VERSION (v1+/v2+ stable modules exempt)"
 fi
 
 # ----------------------------------------------------------------------------
 # 4. Workflow Go pins must match VERSIONS.md.
 # ----------------------------------------------------------------------------
-echo "[4/4] CI workflow Go pins"
+echo "[4/5] CI workflow Go pins"
+[[ -d .github/workflows ]] || err "check [4/5]: .github/workflows/ does not exist — cannot validate Go pins"
 wf_drift=$(grep -RhnE "go-version(-input)?:[[:space:]]*['\"]?[0-9]+\.[0-9]+(\.[0-9]+)?['\"]?" .github/workflows/ 2>/dev/null \
   | grep -vE "go-version(-input)?:[[:space:]]*['\"]?${GO_VERSION//./\\.}['\"]?" \
   | grep -vE "matrix\.go" || true)
@@ -133,6 +161,46 @@ if [[ -n "$wf_drift" ]]; then
   echo "$wf_drift" | sed 's/^/    /'
 else
   ok ".github/workflows/ Go pins == $GO_VERSION"
+fi
+
+# ----------------------------------------------------------------------------
+# 5. docs/requirements.md version *prose* must match VERSIONS.md.
+#    docs/ is published to Pages via mkdocs, so a stale collector-runtime or
+#    Go-toolchain row misleads readers even though it carries no image ref for
+#    check [1/5] to catch. Validate the two rows the same way [4/5] handles
+#    workflow Go pins.
+# ----------------------------------------------------------------------------
+echo "[5/5] docs/requirements.md version prose"
+REQ_DOC="docs/requirements.md"
+if [[ ! -f "$REQ_DOC" ]]; then
+  ok "$REQ_DOC absent — nothing to validate"
+else
+  # Collector runtime row: "| Collector runtime | v0.163.0 (OCB dist ...". Pull
+  # the first vX.Y.Z on the line and compare its minor to $OCB_VERSION.
+  doc_ocb=$(awk -F'|' '/Collector runtime/ {
+    if (match($0, /v[0-9]+\.[0-9]+\.[0-9]+/)) { print substr($0, RSTART+1, RLENGTH-1); exit }
+  }' "$REQ_DOC")
+  if [[ -z "$doc_ocb" ]]; then
+    err "$REQ_DOC: could not find a 'Collector runtime' version row"
+  elif [[ "$doc_ocb" != "$OCB_VERSION" ]]; then
+    err "$REQ_DOC Collector runtime=v$doc_ocb != VERSIONS.md v$OCB_VERSION"
+  else
+    ok "$REQ_DOC Collector runtime == v$OCB_VERSION"
+  fi
+
+  # Go toolchain row: "| Go toolchain | Go 1.26 (required ...". Compare X.Y.
+  doc_go=$(awk -F'|' '/Go toolchain/ {
+    if (match($0, /Go[[:space:]]+[0-9]+\.[0-9]+/)) {
+      s = substr($0, RSTART, RLENGTH); gsub(/Go[[:space:]]+/, "", s); print s; exit
+    }
+  }' "$REQ_DOC")
+  if [[ -z "$doc_go" ]]; then
+    err "$REQ_DOC: could not find a 'Go toolchain' version row"
+  elif [[ "$doc_go" != "$GO_VERSION" ]]; then
+    err "$REQ_DOC Go toolchain=$doc_go != VERSIONS.md $GO_VERSION"
+  else
+    ok "$REQ_DOC Go toolchain == $GO_VERSION"
+  fi
 fi
 
 # ----------------------------------------------------------------------------

@@ -80,13 +80,21 @@ Source: [ISI-753](https://paperclip.isitobservable.com/ISI/issues/ISI-753).
 ### Published digests
 
 An independently-verifiable pin: the immutable `@sha256:` digest behind each
-mutable date tag. `publish-ocb-image.yml` prints the ready-to-paste line to its
-run summary (step "Print published image refs + record digest"); copy it here
-after each publish so a consumer can pin by digest and `cosign verify` it.
+mutable date tag. Both the canonical `gatewayapiprocessor-collector` image and
+the `otelcol-gatewayapi` alias (the name every `deploy/` manifest pins) are
+pushed from one manifest, so they share a digest — `cosign verify` must name
+whichever repo you actually pull from. `publish-ocb-image.yml` prints the
+ready-to-paste line (both names) to its run summary (step "Print published image
+refs + record digest"); record it here after each publish.
 
-| Date tag     | Digest (`ghcr.io/henrikrexed/gatewayapiprocessor-collector@...`) |
-| ------------ | ---------------------------------------------------------------- |
-| `2026-04-21` | _pending — record from the next `publish-ocb-image.yml` run_     |
+Both packages are **public** on GHCR, so a consumer can resolve and verify the
+digest anonymously (`crane digest ghcr.io/henrikrexed/otelcol-gatewayapi:<tag>`).
+Real publish tags carry an ISI suffix (`ocb-YYYY-MM-DD-isiNNN` → tag
+`YYYY-MM-DD-isiNNN`); the current demo pin is the bare-date `2026-04-21`.
+
+| Date tag     | Digest (shared by `…/gatewayapiprocessor-collector` and `…/otelcol-gatewayapi`) |
+| ------------ | ------------------------------------------------------------------------------- |
+| `2026-04-21` | `sha256:c5b0c418e15886b1a17576be0bc6d5ade3f4a900238f952d5fb7039b3ae7dd6a`        |
 
 ## Update procedure
 
