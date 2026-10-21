@@ -13,7 +13,7 @@ Pinned manifest for the `gatewayapiprocessor` demo stack.
 | Istio (ambient profile)       | 1.26.0         | Ambient GA; waypoint `Telemetry` API stable                         |
 | Kgateway                      | v2.1.0         | CNCF-donated release; `HttpListenerPolicy` available                |
 | OTel Operator                 | v0.149.0       | Latest upstream operator release at demo cut; CRD `v1beta1` schema identical to v0.150.0 (no upstream v0.150 operator yet — see ISI-754) |
-| OTel Collector (OCB build)    | v0.150.0       | Latest 0.150 release line; stable modules at v1.56.0                |
+| OTel Collector (OCB build)    | v0.154.0       | Bumped from v0.150 (ISI-6241); stable modules at v1.60.0. k8s.io/* stays pinned to v0.35.4 in builder-config — contrib's k8sattributesprocessor still requires client-go v0.35.4 at this line (verified through contrib v0.157.0) |
 | OBI (opentelemetry-ebpf-...)  | v0.8.0         | Current release; k8s metadata enrichment available                  |
 | OTel Demo                     | v2.2.0         | Carries HTTPRoute-ready manifests                                   |
 | OpenTelemetry semconv         | 1.40.0         | Baseline for `http.*`, `k8s.*`; no upstream `k8s.gateway.*` yet     |
