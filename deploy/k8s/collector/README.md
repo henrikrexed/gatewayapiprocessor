@@ -59,8 +59,8 @@ deploy/k8s/collector/
 
 ## Image / version pin
 
-Both tiers run `ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21`. This is
-the OCB build pinned in `gatewayapiprocessor/VERSIONS.md` (Collector v0.150.0,
+Both tiers run `ghcr.io/henrikrexed/otelcol-gatewayapi:2026-10-21`. This is
+the OCB build pinned in `gatewayapiprocessor/VERSIONS.md` (Collector v0.163.0,
 Operator v0.149.0). Bumping the image requires a PR against `VERSIONS.md` and a
 re-record of the demo fallback clip.
 
@@ -79,7 +79,7 @@ they are not.
 | Gateway API CRDs v1.3.0 (`gateways`, `httproutes`, `gatewayclasses`) | `kubectl get crd gateways.gateway.networking.k8s.io` exists and matches the v1.3.0 schema | ProxOps |
 | Namespace `gateway-collector` and `Secret/dt-otlp-ingest` (with keys `endpoint`, `api-token`) | `kubectl -n gateway-collector get secret dt-otlp-ingest -o jsonpath='{.data.endpoint}' \| base64 -d` matches the DT tenant URL | ISI-755 / ProxOps |
 | Workload cluster nodes Ready, kernel ≥ 6.x | `kubectl get nodes -o jsonpath='{.items[*].status.nodeInfo.kernelVersion}'` all start with `6.` | ProxOps (ISI-753 / ISI-738) |
-| Custom collector image pullable from harbor mirror or upstream ghcr.io | `crane manifest ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21` resolves | Build pipeline |
+| Custom collector image pullable from harbor mirror or upstream ghcr.io | `crane manifest ghcr.io/henrikrexed/otelcol-gatewayapi:2026-10-21` resolves | Build pipeline |
 
 ## Apply order
 
@@ -114,11 +114,11 @@ kubectl -n otel-system rollout status ds/otelcol-agent-collector --timeout=180s
 # Two CRs, one each tier, gateway shows replicas=2.
 kubectl get otelcol -A
 # NAMESPACE           NAME              MODE        VERSION   READY   AGE   IMAGE
-# gateway-collector   otelcol-gateway   deployment  0.150.0   2/2     1m    ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21
-# otel-system         otelcol-agent     daemonset   0.150.0   N/N     1m    ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21
+# gateway-collector   otelcol-gateway   deployment  0.163.0   2/2     1m    ghcr.io/henrikrexed/otelcol-gatewayapi:2026-10-21
+# otel-system         otelcol-agent     daemonset   0.163.0   N/N     1m    ghcr.io/henrikrexed/otelcol-gatewayapi:2026-10-21
 
 # Synthetic span from inside the cluster.
-kubectl run -n default --rm -it --restart=Never tg --image=ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.150.0 -- \
+kubectl run -n default --rm -it --restart=Never tg --image=ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.163.0 -- \
   traces --otlp-insecure \
   --otlp-endpoint=otelcol-gateway-collector.gateway-collector.svc.cluster.local:4317 \
   --traces 1 --service smoke-test \
