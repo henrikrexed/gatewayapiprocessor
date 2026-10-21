@@ -13,7 +13,7 @@ Pinned manifest for the `gatewayapiprocessor` demo stack.
 | Istio (ambient profile)       | 1.26.0         | Ambient GA; waypoint `Telemetry` API stable                         |
 | Kgateway                      | v2.1.0         | CNCF-donated release; `HttpListenerPolicy` available                |
 | OTel Operator                 | v0.149.0       | Latest upstream operator release at demo cut; CRD `v1beta1` schema identical to v0.150.0 (no upstream v0.150 operator yet — see ISI-754) |
-| OTel Collector (OCB build)    | v0.154.0       | Bumped from v0.150 (ISI-6241); stable modules at v1.60.0. k8s.io/* stays pinned to v0.35.4 in builder-config — contrib's k8sattributesprocessor still requires client-go v0.35.4 at this line (verified through contrib v0.157.0) |
+| OTel Collector (OCB build)    | v0.163.0       | Bumped from v0.154 (ISI-6386); stable modules at v1.69.0. k8sattributesprocessor moved to stable component versioning — pinned at v1.2.0, which adopted client-go v0.37.1 (train v0.163.0, verified on the Go module proxy 2026-10-21); k8s.io/* down-pins dropped, module on k8s v0.37.1 + gateway-api v1.6.3 (supersedes dependabot #89) |
 | OBI (opentelemetry-ebpf-...)  | v0.8.0         | Current release; k8s metadata enrichment available                  |
 | OTel Demo                     | v2.2.0         | Carries HTTPRoute-ready manifests                                   |
 | OpenTelemetry semconv         | 1.40.0         | Baseline for `http.*`, `k8s.*`; no upstream `k8s.gateway.*` yet     |
@@ -22,7 +22,7 @@ Pinned manifest for the `gatewayapiprocessor` demo stack.
 | Loki                          | 3.2            | Compose file pin                                                    |
 | Prometheus                    | 3.1            | Compose file pin                                                    |
 | Dynatrace OTel endpoint       | SaaS           | DT tenant env + token in Makefile from env vars                     |
-| Go                            | 1.26           | Forced by `k8s.io/apimachinery@v0.36` + `client-go@v0.36` `go 1.26.0` directive (ISI-844; previously 1.25 / ISI-687) |
+| Go                            | 1.26           | Forced by `k8s.io/apimachinery@v0.37` + `client-go@v0.37` `go 1.26.0` directive (ISI-844; previously 1.25 / ISI-687) |
 
 ## Cluster requirements
 
