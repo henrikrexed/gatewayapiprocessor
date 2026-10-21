@@ -4,9 +4,9 @@
 
 | Component                 | Minimum / tested version                                              |
 | ------------------------- | --------------------------------------------------------------------- |
-| Collector API             | `go.opentelemetry.io/collector/component` v1.56.0                     |
-| Collector runtime         | v0.150.0 (OCB dist `otelcol-gatewayapi` in this repo)                 |
-| Go toolchain              | Go 1.25 (required by OTel Collector v0.150 modules)                   |
+| Collector API             | `go.opentelemetry.io/collector/component` v1.69.0                     |
+| Collector runtime         | v0.163.0 (OCB dist `otelcol-gatewayapi` in this repo)                 |
+| Go toolchain              | Go 1.26 (required by OTel Collector v0.163 modules)                   |
 
 The processor is shipped as a Go module and is intended to be linked into a
 custom collector via the OpenTelemetry Collector Builder (OCB). See
