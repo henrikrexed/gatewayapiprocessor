@@ -9,39 +9,39 @@ dist:
   name: otelcol-gatewayapi
   description: OTel Collector with gatewayapiprocessor (ObsSummit NA 2026 demo)
   output_path: ./_build
-  version: 0.150.0-isi.1
+  version: 0.154.0-isi.1
 
 receivers:
-  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.150.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filelogreceiver v0.150.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver v0.150.0
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.154.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filelogreceiver v0.154.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver v0.154.0
 
 processors:
   # Pipeline invariants per Observability Agent rules:
   #   memory_limiter MUST be first, batch MUST be last.
-  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.150.0
-  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.150.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/k8sattributesprocessor v0.150.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor v0.150.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.150.0
+  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.154.0
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.154.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/k8sattributesprocessor v0.154.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor v0.154.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.154.0
   # tail_sampling on the gateway pipeline (ISI-754 §6.2 invariant — full-trace
   # decisions live at the gateway, after agent loadbalancing has converged spans
   # of the same trace on a single replica).
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/tailsamplingprocessor v0.150.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/tailsamplingprocessor v0.154.0
   # The new one — ISI-670 gating deliverable.
   - gomod: github.com/henrikrexed/gatewayapiprocessor/gatewayapiprocessor v0.1.0
 
 exporters:
-  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.150.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusexporter v0.150.0
-  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.150.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.154.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusexporter v0.154.0
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.154.0
   # loadbalancing on the agent pipelines: traces+metrics keyed by traceID
   # (ISI-754) and a second instance keyed by service for split logs (ISI-760).
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/loadbalancingexporter v0.150.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/loadbalancingexporter v0.154.0
 
 extensions:
-  - gomod: go.opentelemetry.io/collector/extension/memorylimiterextension v0.150.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckextension v0.150.0
+  - gomod: go.opentelemetry.io/collector/extension/memorylimiterextension v0.154.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckextension v0.154.0
 
 # Replace block: point OCB at the local processor module during development so
 # we don't round-trip through a GitHub tag for every iteration. CI strips this
@@ -52,15 +52,19 @@ extensions:
 # repo root. Using ./gatewayapiprocessor resolves to _build/gatewayapiprocessor
 # and makes `go mod tidy` fail (see ISI-693).
 #
-# k8s.io/* pins (ISI-844): dependabot PR #50 bumped this processor's go.mod
-# to k8s.io 0.36.0, but contrib v0.150 / v0.151's k8sattributesprocessor still
-# requires k8s.io 0.35.x — its internal/kube/fake_informer.go does not
-# implement client-go v0.36's new cache.SharedInformer.HasSyncedChecker()
-# method, so MVS picking 0.36 breaks the OCB build. Pin k8s.io/* down to
-# 0.35.4 in the OCB-generated go.mod only; this processor is API-compatible
-# with 0.35.x at runtime (we only consume informer factories, never implement
-# cache interfaces). Drop these once contrib catches up to k8s.io 0.36
-# (track upstream open-telemetry/opentelemetry-collector-contrib).
+# k8s.io/* pins (ISI-844, re-confirmed ISI-6241): dependabot PR #50 bumped this
+# processor's go.mod to k8s.io 0.36.0, but contrib's k8sattributesprocessor
+# still requires k8s.io 0.35.x — its internal/kube/fake_informer.go does not
+# implement client-go v0.36+'s cache.SharedInformer.HasSyncedChecker() method,
+# so MVS picking 0.36/0.37 breaks the OCB build. Verified against the Go module
+# proxy on 2026-10-20: contrib k8sattributesprocessor pins client-go v0.35.4 all
+# the way through v0.157.0, INCLUDING v0.154.0 — so the collector v0.154 bump
+# does NOT unblock a k8s 0.37 move (that was the false premise of PR #92). Pin
+# k8s.io/* down to 0.35.4 in the OCB-generated go.mod only; this processor is
+# API-compatible with 0.35.x at runtime (we only consume informer factories,
+# never implement cache interfaces). Drop these once contrib actually moves to
+# client-go v0.37 (track upstream open-telemetry/opentelemetry-collector-contrib;
+# the k8s 0.37 / gateway-api 1.6.1 bumps in dependabot #89 stay blocked until then).
 replaces:
   - github.com/henrikrexed/gatewayapiprocessor/gatewayapiprocessor => ../gatewayapiprocessor
   - k8s.io/api => k8s.io/api v0.35.4
