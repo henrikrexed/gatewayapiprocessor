@@ -17,8 +17,8 @@
 #   * batch                     → MUST be last processor.
 #
 # Image, operator, and semconv versions track gatewayapiprocessor/VERSIONS.md
-# (OTel Operator v0.149.0, Collector v0.150.0, custom collector image
-# pinned at ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21).
+# (OTel Operator v0.149.0, Collector v0.163.0, custom collector image
+# pinned at ghcr.io/henrikrexed/otelcol-gatewayapi:2026-10-21).
 #
 # Sized for the workload pattern in obs-annex §C: ~30 RPS per node from
 # the OTel Demo + ambient/Kgateway data plane. Headroom is 2x; if a
@@ -36,7 +36,7 @@ metadata:
 spec:
   mode: daemonset
   serviceAccount: otelcol-agent
-  image: ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21
+  image: ghcr.io/henrikrexed/otelcol-gatewayapi:2026-10-21
   # Always pull: the date-stamped tag (`:YYYY-MM-DD`) is the source of truth
   # and may be re-published in place when an OCB component fix lands. With
   # `IfNotPresent`, kubelets keep the cached old digest and pods stay on the

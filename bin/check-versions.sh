@@ -63,7 +63,7 @@ fi
 # 2. Makefile COLLECTOR_TAG must match VERSIONS.md tag.
 # ----------------------------------------------------------------------------
 echo "[2/4] Makefile — COLLECTOR_TAG matches VERSIONS.md"
-mk_tag=$(awk -F'?=' '/^COLLECTOR_TAG[[:space:]]*\?=/ {gsub(/[[:space:]]/,"",$2); print $2; exit}' Makefile)
+mk_tag=$(awk -F'[?]=' '/^COLLECTOR_TAG[[:space:]]*\?=/ {gsub(/[[:space:]]/,"",$2); print $2; exit}' Makefile)
 if [[ "$mk_tag" != "$COLLECTOR_TAG" ]]; then
   err "Makefile COLLECTOR_TAG=$mk_tag != VERSIONS.md $COLLECTOR_TAG"
 else
@@ -75,7 +75,7 @@ fi
 #    VERSIONS.md OCB version.
 # ----------------------------------------------------------------------------
 echo "[3/4] OCB version pins"
-mk_ocb=$(awk -F'?=' '/^OCB_VERSION[[:space:]]*\?=/ {gsub(/[[:space:]]/,"",$2); print $2; exit}' Makefile)
+mk_ocb=$(awk -F'[?]=' '/^OCB_VERSION[[:space:]]*\?=/ {gsub(/[[:space:]]/,"",$2); print $2; exit}' Makefile)
 if [[ "$mk_ocb" != "$OCB_VERSION" ]]; then
   err "Makefile OCB_VERSION=$mk_ocb != VERSIONS.md $OCB_VERSION"
 else

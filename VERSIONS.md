@@ -2,8 +2,8 @@
 
 Pinned manifest for the `gatewayapiprocessor` demo stack.
 
-**Date:** 2026-04-21
-**Freeze status:** `demo-locked` after rehearsal (see [ISI-671](https://paperclip.isitobservable.com/ISI/issues/ISI-671)); OTel stack rebased onto v0.150 per [ISI-687](https://paperclip.isitobservable.com/ISI/issues/ISI-687).
+**Date:** 2026-10-21
+**Freeze status:** `demo-locked` after rehearsal (see [ISI-671](https://paperclip.isitobservable.com/ISI/issues/ISI-671)); OTel stack rebased onto v0.163 per the [ISI-6164](https://paperclip.isitobservable.com/ISI/issues/ISI-6164) dependency release ([ISI-6386](https://paperclip.isitobservable.com/ISI/issues/ISI-6386) — k8s v0.37.1 + gateway-api v1.6.3, down-pins dropped; prior v0.154 train [ISI-6241](https://paperclip.isitobservable.com/ISI/issues/ISI-6241), v0.150 rebase [ISI-687](https://paperclip.isitobservable.com/ISI/issues/ISI-687)). Image tag `:2026-10-21` published on the `ocb-2026-10-21` tag push ([ISI-6177](https://paperclip.isitobservable.com/ISI/issues/ISI-6177)).
 **Update discipline:** version bumps require a PR against this file. Any bump triggers re-record of the pre-recorded fallback clip.
 
 | Component                     | Pinned version | Why pinned                                                          |
@@ -72,7 +72,7 @@ Source: [ISI-753](https://paperclip.isitobservable.com/ISI/issues/ISI-753).
 
 ## Image tags
 
-- Custom collector: `ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21`
+- Custom collector: `ghcr.io/henrikrexed/otelcol-gatewayapi:2026-10-21`
   - Also tagged `:latest` until next version bump (semver path; published by `release.yml`).
   - Date-stamped pins (e.g. `:2026-04-21`) are published by `.github/workflows/publish-ocb-image.yml` on `ocb-YYYY-MM-DD` tag pushes.
   - Multi-arch: `linux/amd64`, `linux/arm64`.

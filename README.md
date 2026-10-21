@@ -64,7 +64,7 @@ Mesh routes additionally carry first-class GAMMA identity ([ISI-6178](https://pa
 Built via OCB ([builder-config.yaml](./builder-config.yaml)) and published to GHCR:
 
 ```
-ghcr.io/henrikrexed/otelcol-gatewayapi:2026-04-21
+ghcr.io/henrikrexed/otelcol-gatewayapi:2026-10-21
 ```
 
 Multi-arch: `linux/amd64`, `linux/arm64`. Tag matches `VERSIONS.md` date.
